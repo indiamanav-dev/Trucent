@@ -1,0 +1,97 @@
+name: Build TruCent APK
+
+# Runs automatically whenever you push to the repo, and can also be triggered
+# manually from the Actions tab ("Run workflow" button). Everything happens
+# on GitHub's servers — nothing needs to be installed on your own computer.
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch: {}
+
+permissions:
+  contents: write   # needed so this workflow can publish a Release with the APK attached
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the repo
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Set up Java (needed for Android's build tool, Gradle)
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Install web app dependencies
+        run: npm install
+
+      - name: Build the web app
+        run: npm run build
+
+      - name: Install Capacitor's Android tooling
+        run: npm install @capacitor/android
+
+      - name: Generate the Android project
+        run: npx cap add android
+
+      - name: Drop in the SMS-reading plugin
+        run: |
+          mkdir -p android/app/src/main/java/com/trucent/app
+          cp android-sms-plugin/java/com/trucent/app/SmsReaderPlugin.kt \
+             android/app/src/main/java/com/trucent/app/SmsReaderPlugin.kt
+          cp android-sms-plugin/MainActivity-example.java \
+             android/app/src/main/java/com/trucent/app/MainActivity.java
+
+      - name: Add SMS permissions to the Android manifest
+        run: |
+          sed -i '/<manifest/a\    <uses-permission android:name="android.permission.READ_SMS" />\n    <uses-permission android:name="android.permission.RECEIVE_SMS" />' \
+            android/app/src/main/AndroidManifest.xml
+
+      - name: Sync Capacitor
+        run: npx cap sync android
+
+      - name: Create a signing key
+        # Self-signed, generated fresh on each build — fine for sideloading.
+        # Note: because it's regenerated every run, installing a new build
+        # over an old one may require uninstalling the previous one first
+        # (Android requires matching signatures to "update" an app in place).
+        run: |
+          keytool -genkeypair -v -keystore release.keystore -alias trucent \
+            -keyalg RSA -keysize 2048 -validity 10000 \
+            -storepass trucent123 -keypass trucent123 \
+            -dname "CN=TruCent, OU=Personal, O=TruCent, L=City, S=State, C=IN"
+
+      - name: Build the signed release APK
+        working-directory: android
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleRelease \
+            -Pandroid.injected.signing.store.file=$(pwd)/../release.keystore \
+            -Pandroid.injected.signing.store.password=trucent123 \
+            -Pandroid.injected.signing.key.alias=trucent \
+            -Pandroid.injected.signing.key.password=trucent123
+
+      - name: Find and rename the APK
+        run: |
+          apk=$(find android/app/build/outputs/apk/release -name "*.apk" | head -n 1)
+          mkdir -p out
+          cp "$apk" out/TruCent-V-001.P.apk
+
+      - name: Publish as a downloadable Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          name: TruCent V-001.P (build ${{ github.run_number }})
+          files: out/TruCent-V-001.P.apk
+          body: |
+            Automated build. Download `TruCent-V-001.P.apk` below, then see
+            the main README for how to install it on Android (enable
+            "install unknown apps", tap the file, allow the SMS permission
+            prompt on first launch).

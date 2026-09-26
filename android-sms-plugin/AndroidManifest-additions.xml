@@ -1,0 +1,25 @@
+<!--
+  Add these two lines inside the <manifest> tag of:
+  android/app/src/main/AndroidManifest.xml
+
+  (This file only exists AFTER you run `npx cap add android` — see
+  android-sms-plugin/README.md for the full integration steps.)
+-->
+
+<uses-permission android:name="android.permission.READ_SMS" />
+<uses-permission android:name="android.permission.RECEIVE_SMS" />
+
+<!--
+  READ_SMS  — lets fetchTransactions() query the existing inbox.
+  RECEIVE_SMS — optional; only needed if you later want live updates as new
+  SMS arrive (via a BroadcastReceiver) rather than just "sync on demand".
+  The plugin as shipped only uses READ_SMS; RECEIVE_SMS is included here
+  for convenience if you extend it later. Remove it if you don't need it —
+  fewer permissions means fewer warnings for whoever installs the app.
+
+  Note: since this app is sideloaded (not distributed via Play Store),
+  Play Store's SMS-permission policy restrictions for finance apps do not
+  apply here — Android's own runtime permission dialog (which the plugin
+  triggers via requestPermission()) is what actually gates access, and the
+  person installing the app must explicitly tap "Allow" when asked.
+-->
