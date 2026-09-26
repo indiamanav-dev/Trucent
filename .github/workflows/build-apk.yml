@@ -44,8 +44,8 @@ jobs:
       - name: Drop in the SMS-reading plugin
         run: |
           mkdir -p android/app/src/main/java/com/trucent/app
-          cp android-sms-plugin/java/com/trucent/app/SmsReaderPlugin.kt \
-             android/app/src/main/java/com/trucent/app/SmsReaderPlugin.kt
+          cp android-sms-plugin/java/com/trucent/app/SmsReaderPlugin.java \
+             android/app/src/main/java/com/trucent/app/SmsReaderPlugin.java
           cp android-sms-plugin/MainActivity-example.java \
              android/app/src/main/java/com/trucent/app/MainActivity.java
 

@@ -34,8 +34,8 @@ This creates the `android/` folder — a full, valid Android Studio project.
 Copy the plugin source to where Capacitor expects custom plugins:
 ```bash
 mkdir -p android/app/src/main/java/com/trucent/app
-cp android-sms-plugin/java/com/trucent/app/SmsReaderPlugin.kt \
-   android/app/src/main/java/com/trucent/app/SmsReaderPlugin.kt
+cp android-sms-plugin/java/com/trucent/app/SmsReaderPlugin.java \
+   android/app/src/main/java/com/trucent/app/SmsReaderPlugin.java
 ```
 
 **4. Register the plugin**
