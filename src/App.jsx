@@ -1825,6 +1825,23 @@ function BurnTab({
 }
 
 function SmsConnectCard({ status, onConnect }) {
+  const [debugInfo, setDebugInfo] = useState(null);
+
+  useEffect(() => {
+    if (status !== "unavailable") return;
+    try {
+      const cap = typeof window !== "undefined" ? window.Capacitor : undefined;
+      setDebugInfo({
+        capacitorObjectExists: !!cap,
+        isNativePlatform: cap?.isNativePlatform ? cap.isNativePlatform() : "n/a (method missing)",
+        platform: cap?.getPlatform ? cap.getPlatform() : "n/a (method missing)",
+        registeredPluginNames: cap?.Plugins ? Object.keys(cap.Plugins) : "n/a (no Plugins object)",
+      });
+    } catch (e) {
+      setDebugInfo({ error: e.message });
+    }
+  }, [status]);
+
   if (status === "granted") {
     return (
       <div style={{ ...glassCard, display: "flex", alignItems: "center", gap: 10, padding: "12px 14px", marginBottom: 18, borderColor: "rgba(52,211,153,0.3)" }}>
@@ -1858,7 +1875,20 @@ function SmsConnectCard({ status, onConnect }) {
 
       {status === "unavailable" && (
         <div style={{ fontSize: 11, color: T.textMute, background: T.surface, borderRadius: 8, padding: "8px 10px", marginBottom: 10 }}>
-          Not available in this preview — this connects once the app is installed on an Android phone.
+          <div style={{ marginBottom: debugInfo ? 8 : 0 }}>
+            Not available — this either means you're viewing this in a browser preview, or the app
+            is installed but the native SMS plugin isn't reaching the bridge. Diagnostic info below
+            (screenshot this if the SMS card still doesn't work on your installed Android app):
+          </div>
+          {debugInfo && (
+            <pre style={{
+              fontSize: 9.5, background: T.bg, borderRadius: 6, padding: 8, margin: 0,
+              whiteSpace: "pre-wrap", wordBreak: "break-word", color: T.textSoft,
+              fontFamily: "monospace", border: `1px solid ${T.border}`,
+            }}>
+              {JSON.stringify(debugInfo, null, 2)}
+            </pre>
+          )}
         </div>
       )}
       {status === "denied" && (
