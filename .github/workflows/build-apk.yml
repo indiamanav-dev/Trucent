@@ -41,6 +41,18 @@ jobs:
       - name: Generate the Android project
         run: npx cap add android
 
+      - name: Replace the default launcher icon with the TruCent icon
+        run: |
+          for density in mdpi hdpi xhdpi xxhdpi xxxhdpi; do
+            src="app-icons/mipmap-${density}.png"
+            dest_dir="android/app/src/main/res/mipmap-${density}"
+            if [ -f "$src" ] && [ -d "$dest_dir" ]; then
+              cp "$src" "$dest_dir/ic_launcher.png"
+              cp "$src" "$dest_dir/ic_launcher_round.png"
+              cp "$src" "$dest_dir/ic_launcher_foreground.png"
+            fi
+          done
+
       - name: Drop in the SMS-reading plugin
         run: |
           mkdir -p android/app/src/main/java/com/trucent/app

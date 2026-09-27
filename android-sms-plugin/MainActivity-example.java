@@ -10,9 +10,10 @@ import com.getcapacitor.BridgeActivity;
 public class MainActivity extends BridgeActivity {
     @Override
     public void onCreate(Bundle savedInstanceState) {
-        super.onCreate(savedInstanceState);
-        // Register the custom SMS-reading plugin so window.Capacitor.Plugins.SmsReader
-        // becomes available to the web app.
+        // registerPlugin() must be called BEFORE super.onCreate() — Capacitor
+        // finalizes its plugin registry during super.onCreate(), so anything
+        // registered after that point never reaches window.Capacitor.Plugins.
         registerPlugin(SmsReaderPlugin.class);
+        super.onCreate(savedInstanceState);
     }
 }
