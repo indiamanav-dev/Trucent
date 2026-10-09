@@ -4,6 +4,27 @@ Household expense splitting + "where did my salary go" tracker, built with React
 **This build ships with zero dummy data** — every list starts empty, and the only
 seed profile is "You." Add household members from the profile switcher (top-right avatar).
 
+## What's in this build
+
+- **Local persistence** — data survives closing/reopening the app (not uninstall/reinstall; see the backup discussion in chat for that).
+- **Streaks** — a daily logging streak shown in the header and a dedicated dashboard card (7-day history + best streak).
+- **Local notifications** — budget 80%/100%, bill due tomorrow, goal 50%/100% funded. Needs `@capacitor/local-notifications` (already in `package.json`); no custom native code required.
+- **Home screen widget** — net position + next bill, visible without opening the app. Custom native code in `android-widget/`, wired into the CI build automatically.
+- **Money Wrapped** — a Spotify-Wrapped-style recap (top category, biggest win, saving/logging streaks) for this month, last month, or the year so far.
+- **WhatsApp nudge** — on any pending settlement, sends a prefilled "you owe me ₹X for Y" message via `wa.me`.
+- **Recurring-charge detector** — Money Coach flags merchants billing roughly monthly that aren't yet marked as a recurring bill ("still paying for Netflix?").
+- **Export to Excel/PDF** — hand-built `.xlsx` and `.pdf` generators (no dependencies), shared through Android's native share sheet (covers email, WhatsApp, Drive, anything installed) with a browser-download fallback for the web preview.
+- **SMS parsing rewritten as testable JS** — the native plugin (`android-sms-plugin/`) now only fetches raw messages; all parsing (debit/credit/refund/bill detection, merchant extraction, category guessing) lives in `src/lib.js` and is covered by `test/*.test.mjs` (64 tests, run with `node test/sms.test.mjs` and `node test/lib2.test.mjs` — no build step needed).
+- **Bill SMS → Upcoming** — credit card statements, EMI/loan debits, and utility bills parsed from SMS land in Plan → Upcoming with real due dates, not just UPI/bank transactions.
+- **Tap a transaction to see the original SMS** it was parsed from, with what TruCent extracted from it.
+- **Refresh button** on the SMS card to pull newly arrived messages on demand, plus a "last synced" timestamp and auto-sync on app open.
+
+Two real bugs were also fixed in this pass: **income previously only counted the
+first credit found** (a `.find()` instead of summing all Income transactions —
+silently dropped every salary/interest credit after the first), and **refunds
+displayed with a "−" sign** in the transaction feed (shown as spending, when
+a refund is money coming back in). Both are covered by the test suite now.
+
 ## Run it locally
 
 ```bash

@@ -15,26 +15,23 @@ import com.getcapacitor.annotation.CapacitorPlugin;
 import com.getcapacitor.annotation.Permission;
 import com.getcapacitor.annotation.PermissionCallback;
 
-import java.text.SimpleDateFormat;
 import java.util.Calendar;
-import java.util.Date;
-import java.util.Locale;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 /**
  * SmsReaderPlugin — TruCent (V-001.P)
  *
- * Reads the device's SMS inbox (with explicit runtime permission) and parses
- * bank/UPI debit & credit alerts into structured transactions. Nothing is
- * sent anywhere — parsing happens entirely on-device, and only the parsed
- * results (never raw SMS content) cross the JS bridge.
+ * Reads the device's SMS inbox (with explicit runtime permission) and hands
+ * raw messages to the JS side. All interpretation — deciding what's a debit,
+ * credit, refund, or upcoming bill, extracting amounts and merchant names —
+ * happens in src/lib.js, not here. That split is deliberate: lib.js has a
+ * real unit-test suite (test/sms.test.mjs) that runs in plain Node, so parsing
+ * logic can be verified and improved without rebuilding the Android app. This
+ * plugin's only job is "fetch messages that might be financial" — nothing
+ * sent anywhere; the data stays on-device and only crosses the JS bridge.
  *
- * JS-side contract (see src/App.jsx -> importFromSms):
- *   requestPermission()              -> { granted: boolean }
- *   fetchTransactions({ sinceDays }) -> { transactions: [
- *       { desc, amount (always positive), date: "YYYY-MM-DD", type: "debit"|"credit", sender }
- *   ]}
+ * JS-side contract (see src/App.jsx -> importFromSms, src/lib.js -> ingestMessages):
+ *   requestPermission()           -> { granted: boolean }
+ *   fetchMessages({ sinceDays })  -> { messages: [ { sender, body, ts (epoch ms) } ] }
  */
 @CapacitorPlugin(
     name = "SmsReader",
@@ -69,7 +66,7 @@ public class SmsReaderPlugin extends Plugin {
     }
 
     @PluginMethod
-    public void fetchTransactions(PluginCall call) {
+    public void fetchMessages(PluginCall call) {
         if (!hasRequiredPermission()) {
             call.reject("READ_SMS permission not granted");
             return;
@@ -81,7 +78,6 @@ public class SmsReaderPlugin extends Plugin {
         long cutoff = cal.getTimeInMillis();
 
         JSArray results = new JSArray();
-        SimpleDateFormat dateFmt = new SimpleDateFormat("yyyy-MM-dd", Locale.US);
         Uri uri = Telephony.Sms.Inbox.CONTENT_URI;
         String[] projection = { Telephony.Sms.ADDRESS, Telephony.Sms.BODY, Telephony.Sms.DATE };
         String selection = Telephony.Sms.DATE + " >= ?";
@@ -98,75 +94,32 @@ public class SmsReaderPlugin extends Plugin {
                     String sender = cursor.getString(addressIdx);
                     String body = cursor.getString(bodyIdx);
                     long timestamp = cursor.getLong(dateIdx);
-                    if (sender == null) sender = "";
-                    if (body == null) body = "";
+                    if (body == null || body.trim().isEmpty()) continue;
 
-                    JSObject parsed = parseTransaction(body, sender);
-                    if (parsed == null) continue;
-                    parsed.put("date", dateFmt.format(new Date(timestamp)));
-                    results.put(parsed);
+                    // Light pre-filter only — skip messages that plainly can't be a
+                    // transaction or bill alert, to keep the payload small. Anything
+                    // ambiguous is still sent across; lib.js makes the real call.
+                    String lower = body.toLowerCase();
+                    boolean looksFinancial = lower.indexOf("rs.") >= 0 || lower.indexOf("rs ") >= 0
+                        || lower.indexOf("inr") >= 0 || body.indexOf('₹') >= 0
+                        || lower.contains("a/c") || lower.contains("account")
+                        || lower.contains("card") || lower.contains("upi")
+                        || lower.contains("bill") || lower.contains("due")
+                        || lower.contains("emi") || lower.contains("premium");
+                    if (!looksFinancial) continue;
+
+                    JSObject m = new JSObject();
+                    m.put("sender", sender == null ? "" : sender);
+                    m.put("body", body);
+                    m.put("ts", timestamp);
+                    results.put(m);
                 }
             }
             JSObject ret = new JSObject();
-            ret.put("transactions", results);
+            ret.put("messages", results);
             call.resolve(ret);
         } catch (Exception e) {
             call.reject("Failed to read SMS: " + e.getMessage());
         }
-    }
-
-    /**
-     * Heuristic parser for common Indian bank/UPI transaction alert formats.
-     * Returns null for anything that doesn't look like a transaction alert
-     * (OTPs, promos, delivery updates, etc. are skipped).
-     */
-    private JSObject parseTransaction(String body, String sender) {
-        String lower = body.toLowerCase(Locale.US);
-
-        boolean isDebit = Pattern.compile("debited|spent|paid|withdrawn|purchase of").matcher(lower).find();
-        boolean isCredit = Pattern.compile("credited|received|deposited").matcher(lower).find();
-        if (!isDebit && !isCredit) return null;
-
-        // Skip OTP / promotional messages that happen to mention "credited" reward points etc.
-        if (Pattern.compile("otp|one time password|reward point|cashback offer|is your code").matcher(lower).find()) {
-            return null;
-        }
-
-        Pattern amountPattern = Pattern.compile("(?:rs\\.?|inr)\\s?([0-9,]+(?:\\.[0-9]{1,2})?)", Pattern.CASE_INSENSITIVE);
-        Matcher matcher = amountPattern.matcher(body);
-        if (!matcher.find()) return null;
-
-        String amountStr = matcher.group(1);
-        if (amountStr == null) return null;
-        amountStr = amountStr.replace(",", "");
-        double amount;
-        try {
-            amount = Double.parseDouble(amountStr);
-        } catch (NumberFormatException e) {
-            return null;
-        }
-        if (amount <= 0) return null;
-
-        // Try to pull a merchant/VPA name for a cleaner description than the raw SMS.
-        Pattern merchantPattern = Pattern.compile(
-            "(?:to|at|from|vpa)\\s+([A-Za-z0-9.@_\\-\\s]{3,30}?)(?:\\s+on|\\s+ref|\\s+dated|\\.|,|$)",
-            Pattern.CASE_INSENSITIVE
-        );
-        Matcher merchantMatcher = merchantPattern.matcher(body);
-        String desc;
-        if (merchantMatcher.find() && merchantMatcher.group(1) != null) {
-            desc = merchantMatcher.group(1).trim();
-            if (desc.length() > 40) desc = desc.substring(0, 40);
-        } else {
-            desc = sender;
-        }
-        if (desc == null || desc.trim().isEmpty()) desc = sender;
-
-        JSObject out = new JSObject();
-        out.put("desc", desc);
-        out.put("amount", amount);
-        out.put("type", isCredit ? "credit" : "debit");
-        out.put("sender", sender);
-        return out;
     }
 }

@@ -9,7 +9,16 @@ import {
   ChevronDown, X, TrendingUp, TrendingDown, Bell, PiggyBank,
   ArrowUpRight, ArrowDownRight, LayoutGrid, Target, CalendarClock, Trash2,
   AlertTriangle, ArrowUpCircle, Banknote, Receipt, Scale, Edit2, Bot, Loader2,
+  Flame, RefreshCw, MessageCircle, Share2, CreditCard, Shield,
+  HeartPulse, FileSpreadsheet, FileText, Eye, RotateCcw, Gift,
 } from "lucide-react";
+import {
+  todayISO, getTodayDay, inr, ingestMessages, computeNextBill,
+  computeStreakInfo, detectRecurringCharges, computeWrapped, periodRange,
+  planNotifications, buildNudgeText, waLink, buildWidgetPayload,
+  buildExportModel, buildExportXlsx, buildExportPdf, bytesToBase64, ordinal,
+  daysUntilDate, hashToInt,
+} from "./lib.js";
 
 // ---------------------------------------------------------------------------
 // Design tokens
@@ -45,9 +54,18 @@ const CATEGORY_META = {
   "Transport": { icon: Car, color: T.blue },
   "Shopping": { icon: ShoppingBag, color: T.pink },
   "Entertainment": { icon: Sparkles, color: "#38BDF8" },
+  "Credit Card / EMI": { icon: CreditCard, color: "#F472B6" },
+  "Insurance": { icon: Shield, color: "#22D3EE" },
+  "Health": { icon: HeartPulse, color: "#F87171" },
+  "Income": { icon: TrendingUp, color: T.green },
   "Others": { icon: Wallet, color: T.textSoft },
 };
 const CATEGORY_LIST = Object.keys(CATEGORY_META);
+// "Income" is auto-detected from SMS credits, not something you'd manually
+// file an expense under — keep it out of the add/edit-expense dropdowns, but
+// the transaction reclassify selector (CategorySelect) still offers it, since
+// re-labeling a wrongly-parsed debit/credit is a legitimate correction.
+const EXPENSE_CATEGORY_LIST = CATEGORY_LIST.filter((c) => c !== "Income");
 
 // `let` (not `const`) so members can be added/edited/removed at runtime — see
 // addMember / updateMember / deleteMember in the App shell, which mutate this
@@ -57,11 +75,6 @@ const CATEGORY_LIST = Object.keys(CATEGORY_META);
 let MEMBERS = [{ id: "you", name: "You", color: "#FBBF24" }];
 
 const MEMBER_PALETTE = ["#8B5CF6", "#EC4899", "#FBBF24", "#34D399", "#60A5FA", "#F97316", "#14B8A6", "#F472B6"];
-
-// Real device date — no more fixed demo date.
-const todayISO = () => new Date().toISOString().slice(0, 10);
-const getTodayDay = () => new Date().getDate();
-const inr = (n) => "₹" + Math.round(Math.abs(n)).toLocaleString("en-IN");
 
 // ---------------------------------------------------------------------------
 // No seed data in production — every list starts empty.
@@ -93,35 +106,33 @@ function simplifyBalances(net) {
 }
 function memberName(id) { return MEMBERS.find((m) => m.id === id)?.name || id; }
 function memberColor(id) { return MEMBERS.find((m) => m.id === id)?.color || T.textSoft; }
-function ordinal(n) {
-  if (!n) return "";
-  const s = ["th", "st", "nd", "rd"];
-  const v = n % 100;
-  return s[(v - 20) % 10] || s[v] || s[0];
+
+// ---------------------------------------------------------------------------
+// Local persistence — survives closing/reopening the app on the same install.
+// (Does not survive uninstall/reinstall or a new device — see Android Auto
+// Backup notes in README for that.)
+// ---------------------------------------------------------------------------
+function loadLS(key, fallback) {
+  try {
+    if (typeof window === "undefined" || !window.localStorage) return fallback;
+    const raw = window.localStorage.getItem(key);
+    return raw ? JSON.parse(raw) : fallback;
+  } catch {
+    return fallback;
+  }
 }
-function daysUntil(dueDay) {
-  const now = new Date();
-  const today = now.getDate();
-  const daysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
-  return dueDay >= today ? dueDay - today : daysInMonth - today + dueDay;
+function saveLS(key, value) {
+  try {
+    if (typeof window === "undefined" || !window.localStorage) return;
+    window.localStorage.setItem(key, JSON.stringify(value));
+  } catch {
+    // storage full/unavailable — app keeps working in-memory for this session
+  }
 }
-function daysUntilDate(dateStr) {
-  const diff = (new Date(dateStr) - new Date(todayISO())) / (1000 * 60 * 60 * 24);
-  return Math.round(diff);
-}
-function guessCategory(desc = "") {
-  const d = desc.toLowerCase();
-  if (/salary|credited|neft|imps cr|income/.test(d)) return "Income";
-  if (/swiggy|zomato|restaurant|cafe|dominos|pizza|dine/.test(d)) return "Dining Out";
-  if (/uber|ola|rapido|petrol|diesel|fuel|metro|cab/.test(d)) return "Transport";
-  if (/amazon|myntra|flipkart|ajio|mall|nykaa/.test(d)) return "Shopping";
-  if (/bigbasket|dmart|grocery|kirana|supermarket|blinkit|zepto|instamart/.test(d)) return "Groceries";
-  if (/netflix|spotify|prime video|hotstar|movie|cinema|pvr|inox/.test(d)) return "Entertainment";
-  if (/electricity|water bill|gas bill|broadband|wifi|dth|recharge/.test(d)) return "Utilities";
-  if (/school|tuition|fees|college|academy/.test(d)) return "Tuition / Education";
-  if (/maid|cook|domestic help|servant/.test(d)) return "Domestic Help";
-  if (/society|maintenance|rwa/.test(d)) return "Society Maintenance";
-  return "Others";
+function usePersistentState(key, initialValue) {
+  const [state, setState] = useState(() => loadLS(key, initialValue));
+  useEffect(() => { saveLS(key, state); }, [key, state]);
+  return [state, setState];
 }
 
 // ---------------------------------------------------------------------------
@@ -257,7 +268,12 @@ function generateCoachReport(d) {
 // ---------------------------------------------------------------------------
 // Shared UI atoms
 // ---------------------------------------------------------------------------
-const glassCard = { background: T.gradDark, border: `1px solid ${T.border}`, borderRadius: 18 };
+// color: T.text here matters specifically for <button> elements — buttons get a
+// browser/WebView default (often black) text color that breaks inheritance from
+// the app root, unlike <div>s which inherit correctly either way. Cards built
+// from a <div> are unaffected by this; cards built from a <button> (Settle Up,
+// Next Bill, Goals, Upcoming, etc.) need it to avoid unreadable dark-on-dark text.
+const glassCard = { background: T.gradDark, border: `1px solid ${T.border}`, borderRadius: 18, color: T.text };
 
 function Avatar({ id, size = 30 }) {
   const name = memberName(id);
@@ -313,40 +329,58 @@ export default function TruCent() {
   const [currentMember, setCurrentMember] = useState("you");
   const [showProfile, setShowProfile] = useState(false);
   const [, setMembersTick] = useState(0); // bump to re-render after mutating the module-level MEMBERS array
-  const [expenses, setExpenses] = useState(seedExpenses);
-  const [txList, setTxList] = useState(rawSeedTx);
+  const [expenses, setExpenses] = usePersistentState("trucent_expenses", seedExpenses);
+  const [txList, setTxList] = usePersistentState("trucent_tx", rawSeedTx);
   const [showForm, setShowForm] = useState(false);
 
   const [fDesc, setFDesc] = useState("");
   const [fAmount, setFAmount] = useState("");
-  const [fCategory, setFCategory] = useState(CATEGORY_LIST[0]);
+  const [fCategory, setFCategory] = useState(EXPENSE_CATEGORY_LIST[0]);
   const [fPaidBy, setFPaidBy] = useState("you");
   const [fSplit, setFSplit] = useState(MEMBERS.map((m) => m.id));
   const [fRecurring, setFRecurring] = useState(false);
 
-  const [budgets, setBudgets] = useState(seedBudgets);
-  const [goals, setGoals] = useState(seedGoals);
-  const [planned, setPlanned] = useState(seedPlanned);
+  const [budgets, setBudgets] = usePersistentState("trucent_budgets", seedBudgets);
+  const [goals, setGoals] = usePersistentState("trucent_goals", seedGoals);
+  const [planned, setPlanned] = usePersistentState("trucent_planned", seedPlanned);
 
-  const [bCategory, setBCategory] = useState(CATEGORY_LIST[0]);
+  const [bCategory, setBCategory] = useState(EXPENSE_CATEGORY_LIST[0]);
   const [bLimit, setBLimit] = useState("");
   const [gName, setGName] = useState("");
   const [gTarget, setGTarget] = useState("");
   const [gDeadline, setGDeadline] = useState("");
   const [pDesc, setPDesc] = useState("");
   const [pAmount, setPAmount] = useState("");
-  const [pCategory, setPCategory] = useState(CATEGORY_LIST[0]);
+  const [pCategory, setPCategory] = useState(EXPENSE_CATEGORY_LIST[0]);
   const [pDate, setPDate] = useState("");
 
   const [oDesc, setODesc] = useState("");
   const [oAmount, setOAmount] = useState("");
-  const [oCategory, setOCategory] = useState(CATEGORY_LIST[0]);
+  const [oCategory, setOCategory] = useState(EXPENSE_CATEGORY_LIST[0]);
   const [oMode, setOMode] = useState("Cash");
   const [oRecurring, setORecurring] = useState(false);
   const [oDate, setODate] = useState(todayISO());
 
+  // Engagement/habit-loop state — see Streaks, Money Coach's recurring-charge
+  // detector, SMS ingestion bookkeeping, and local notifications below.
+  const [activityDates, setActivityDates] = usePersistentState("trucent_activity", []);
+  const [smsIgnored, setSmsIgnored] = usePersistentState("trucent_sms_ignored", []);
+  const [lastSmsSync, setLastSmsSync] = usePersistentState("trucent_last_sms_sync", null);
+  const [smsSyncing, setSmsSyncing] = useState(false);
+  const [notifState, setNotifState] = usePersistentState("trucent_notif_state", { init: false, keys: [] });
+  const [recurringDismissed, setRecurringDismissed] = usePersistentState("trucent_recurring_dismissed", []);
+  const [wrappedOpen, setWrappedOpen] = useState(false);
+  const [smsPreviewTx, setSmsPreviewTx] = useState(null);
+
+  // A logging action counts toward the daily streak — called from every
+  // handler below that represents "the user did something in the app today".
+  const recordActivity = () => {
+    const d = todayISO();
+    setActivityDates((prev) => (prev.includes(d) ? prev : [...prev, d].slice(-400)));
+  };
+
   const resetForm = () => {
-    setFDesc(""); setFAmount(""); setFCategory(CATEGORY_LIST[0]);
+    setFDesc(""); setFAmount(""); setFCategory(EXPENSE_CATEGORY_LIST[0]);
     setFPaidBy(currentMember); setFSplit(MEMBERS.map((m) => m.id)); setFRecurring(false);
   };
   const addExpense = () => {
@@ -357,12 +391,19 @@ export default function TruCent() {
       everyMonthDay: fRecurring ? getTodayDay() : undefined, lastPaid: fRecurring ? todayISO() : undefined,
     }, ...prev]);
     resetForm(); setShowForm(false);
+    recordActivity();
   };
-  const markRecurringPaid = (id) => setExpenses((prev) => prev.map((e) => e.id === id ? { ...e, lastPaid: todayISO() } : e));
+  const markRecurringPaid = (id) => { setExpenses((prev) => prev.map((e) => e.id === id ? { ...e, lastPaid: todayISO() } : e)); recordActivity(); };
   const updateExpense = (id, updates) => setExpenses((prev) => prev.map((e) => (e.id === id ? { ...e, ...updates } : e)));
   const deleteExpense = (id) => setExpenses((prev) => prev.filter((e) => e.id !== id));
   const updateTxCategory = (id, category) => setTxList((prev) => prev.map((t) => t.id === id ? { ...t, category } : t));
-  const removeTx = (id) => setTxList((prev) => prev.filter((t) => t.id !== id));
+  // Deleting an SMS-sourced transaction remembers its key so the next sync
+  // doesn't silently bring it back — a delete should stay deleted.
+  const removeTx = (id) => {
+    const victim = txList.find((t) => t.id === id);
+    if (victim?.smsKey) setSmsIgnored((ig) => (ig.includes(victim.smsKey) ? ig : [...ig, victim.smsKey]));
+    setTxList((prev) => prev.filter((t) => t.id !== id));
+  };
 
   const addMember = (name, color) => {
     if (!name.trim()) return;
@@ -389,39 +430,57 @@ export default function TruCent() {
       id: "tx" + Date.now(), desc: oDesc.trim(), amount: Number(oAmount), category: oCategory,
       source: `Offline · ${oMode}`, date: oDate, recurring: oRecurring, manual: true,
     }, ...prev]);
-    setODesc(""); setOAmount(""); setOCategory(CATEGORY_LIST[0]); setOMode("Cash"); setORecurring(false); setODate(todayISO());
+    setODesc(""); setOAmount(""); setOCategory(EXPENSE_CATEGORY_LIST[0]); setOMode("Cash"); setORecurring(false); setODate(todayISO());
+    recordActivity();
   };
 
   // ---- SMS import — bridges to the native SmsReader plugin (Android build only) ----
   // window.Capacitor.Plugins.SmsReader is injected by the native shell at runtime;
   // it simply won't exist in a browser, so this degrades safely to "unavailable" there.
-  const [smsStatus, setSmsStatus] = useState("idle"); // idle | requesting | granted | denied | unavailable
+  // The plugin only *fetches* raw messages — all parsing/categorizing happens in
+  // lib.js's ingestMessages, which has its own unit-test suite (test/sms.test.mjs).
+  const [smsStatus, setSmsStatus] = usePersistentState("trucent_sms_status", "idle"); // idle | requesting | granted | denied | unavailable
   const importFromSms = async () => {
     const plugin = typeof window !== "undefined" ? window.Capacitor?.Plugins?.SmsReader : null;
     if (!plugin) { setSmsStatus("unavailable"); return; }
-    setSmsStatus("requesting");
+    const alreadyGranted = smsStatus === "granted";
+    setSmsStatus(alreadyGranted ? smsStatus : "requesting");
+    setSmsSyncing(true);
     try {
       const perm = await plugin.requestPermission();
-      if (!perm?.granted) { setSmsStatus("denied"); return; }
-      // Native side returns { desc, amount: <always positive>, date, type: "debit"|"credit", sender }
-      const res = await plugin.fetchTransactions({ sinceDays: 90 });
-      const existingKeys = new Set(txList.map((t) => `${t.date}_${Math.abs(t.amount)}_${t.desc}`));
-      const imported = (res?.transactions || [])
-        .filter((t) => !existingKeys.has(`${t.date}_${t.amount}_${t.desc}`))
-        .map((t, i) => ({
-          id: "sms" + Date.now() + i,
-          desc: t.desc,
-          amount: t.type === "credit" ? -Math.abs(t.amount) : Math.abs(t.amount),
-          date: t.date,
-          source: `SMS · ${t.sender || "Bank"}`,
-          category: t.type === "credit" ? "Income" : guessCategory(t.desc),
-        }));
-      setTxList((prev) => [...imported, ...prev]);
+      if (!perm?.granted) { setSmsStatus("denied"); setSmsSyncing(false); return; }
+      const res = await plugin.fetchMessages({ sinceDays: 180 });
+      const today = todayISO();
+      const txKeys = new Set(txList.map((t) => t.smsKey).filter(Boolean));
+      const billKeys = new Set(planned.map((p) => p.billKey).filter(Boolean));
+      const ignored = new Set(smsIgnored);
+      const { txs, bills } = ingestMessages(res?.messages || [], { txKeys, billKeys, ignored, today });
+
+      if (txs.length) setTxList((prev) => [...txs, ...prev]);
+      if (bills.length) {
+        setPlanned((prev) => [
+          ...bills.map((b, i) => ({
+            id: "p" + Date.now() + i, desc: b.desc, category: b.category, amount: b.amount,
+            dueDate: b.dueDate, fromSms: true, billKey: b.billKey, smsKey: b.smsKey, body: b.body, sender: b.sender,
+          })),
+          ...prev,
+        ]);
+      }
+      setLastSmsSync(Date.now());
       setSmsStatus("granted");
+      recordActivity();
     } catch {
       setSmsStatus("denied");
+    } finally {
+      setSmsSyncing(false);
     }
   };
+  // Auto-sync once on app open if SMS was already connected in a previous
+  // session — so reopening the app shows fresh data without an extra tap.
+  useEffect(() => {
+    if (smsStatus === "granted") importFromSms();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const addBudget = () => {
     if (!bLimit || Number(bLimit) <= 0) return;
@@ -451,9 +510,16 @@ export default function TruCent() {
   const addPlanned = () => {
     if (!pDesc.trim() || !pAmount || Number(pAmount) <= 0 || !pDate) return;
     setPlanned((prev) => [...prev, { id: "p" + Date.now(), desc: pDesc.trim(), category: pCategory, amount: Number(pAmount), dueDate: pDate }]);
-    setPDesc(""); setPAmount(""); setPCategory(CATEGORY_LIST[0]); setPDate("");
+    setPDesc(""); setPAmount(""); setPCategory(EXPENSE_CATEGORY_LIST[0]); setPDate("");
+    recordActivity();
   };
-  const removePlanned = (id) => setPlanned((prev) => prev.filter((p) => p.id !== id));
+  // Same reasoning as removeTx: an SMS-detected bill the user dismisses should
+  // stay dismissed, not reappear next time SMS is re-synced.
+  const removePlanned = (id) => {
+    const victim = planned.find((p) => p.id === id);
+    if (victim?.fromSms && victim.billKey) setSmsIgnored((ig) => (ig.includes(victim.billKey) ? ig : [...ig, victim.billKey]));
+    setPlanned((prev) => prev.filter((p) => p.id !== id));
+  };
   const convertPlannedToExpense = (item) => {
     setExpenses((prev) => [{
       id: "e" + Date.now(), desc: item.desc, category: item.category, amount: item.amount,
@@ -475,9 +541,15 @@ export default function TruCent() {
   const recurringItems = expenses.filter((e) => e.recurring);
   const recurringMonthlyTotal = recurringItems.reduce((s, e) => s + e.amount, 0);
 
-  const spendTx = txList.filter((t) => t.amount > 0);
+  // spend transactions exclude Income and anything flagged `excluded` (credit-card
+  // bill payments from the bank account — the card's own purchases already count,
+  // so counting the payoff too would double it).
+  const spendTx = txList.filter((t) => t.amount > 0 && t.category !== "Income" && !t.excluded);
   const totalSpend = spendTx.reduce((s, t) => s + t.amount, 0) + recurringMonthlyTotal;
-  const income = Math.abs(txList.find((t) => t.category === "Income")?.amount || 0);
+  // Sum ALL income transactions (salary, interest, multiple credits in a month),
+  // not just the first one found — a single .find() silently dropped every
+  // credit after the first.
+  const income = txList.filter((t) => t.category === "Income").reduce((s, t) => s + Math.abs(t.amount), 0);
   const saved = income - totalSpend;
   const savingsRate = income ? Math.max(0, Math.min(100, (saved / income) * 100)) : 0;
 
@@ -488,10 +560,12 @@ export default function TruCent() {
     return Object.entries(map).map(([category, amount]) => ({ category, amount })).sort((a, b) => b.amount - a.amount);
   }, [spendTx, recurringItems]);
 
-  const nextBill = useMemo(() => {
-    if (recurringItems.length === 0) return null;
-    return [...recurringItems].sort((a, b) => daysUntil(a.everyMonthDay) - daysUntil(b.everyMonthDay))[0];
-  }, [recurringItems]);
+  // Earliest upcoming due date across household recurring bills AND anything
+  // planned/SMS-detected in Plan → Upcoming (credit card bills, utility bills, etc).
+  const nextBill = useMemo(
+    () => computeNextBill(recurringItems, planned, todayISO()),
+    [recurringItems, planned]
+  );
 
   const monthlyTrend = useMemo(() => {
     const now = new Date();
@@ -530,6 +604,124 @@ export default function TruCent() {
 
   const personalRecurringTx = txList.filter((t) => t.recurring && t.category !== "Income");
 
+  const streak = useMemo(() => computeStreakInfo(activityDates, todayISO()), [activityDates]);
+
+  const recurringCharges = useMemo(
+    () => detectRecurringCharges(txList, todayISO()).filter((c) => !recurringDismissed.includes(c.key)),
+    [txList, recurringDismissed]
+  );
+  const dismissRecurringCharge = (key) => setRecurringDismissed((prev) => (prev.includes(key) ? prev : [...prev, key]));
+
+  const [wrappedKind, setWrappedKind] = useState("month");
+  const wrapped = useMemo(
+    () => computeWrapped({ txList, recurringItems, goals, activityDates, kind: wrappedKind, today: todayISO() }),
+    [txList, recurringItems, goals, activityDates, wrappedKind]
+  );
+
+  const nameOf = (id) => memberName(id);
+
+  // ---- WhatsApp nudge ----
+  const [nudgePhone, setNudgePhone] = usePersistentState("trucent_nudge_phones", {});
+  const sendNudge = (settlement, phoneOverride) => {
+    const phone = phoneOverride ?? nudgePhone[settlement.from];
+    if (!phone) return false;
+    const text = buildNudgeText({
+      debtorName: memberName(settlement.from),
+      creditorName: memberName(settlement.to),
+      creditorIsMe: settlement.to === currentMember,
+      amount: settlement.amount,
+      items: "shared expenses",
+    });
+    const link = waLink(phone, text);
+    const browser = typeof window !== "undefined" ? window.Capacitor?.Plugins?.Browser : null;
+    if (browser?.open) browser.open({ url: link }); else if (typeof window !== "undefined") window.open(link, "_blank");
+    if (phoneOverride) setNudgePhone((prev) => ({ ...prev, [settlement.from]: phoneOverride }));
+    return true;
+  };
+
+  // ---- Export (Excel / PDF) via the native share sheet ----
+  // One Share action covers "email it" / "WhatsApp it" / "save to Drive" etc.,
+  // since that's exactly what Android's native share sheet already offers —
+  // rather than hardcoding separate per-app buttons.
+  const [exportBusy, setExportBusy] = useState(false);
+  const exportStatement = async (format, kind) => {
+    setExportBusy(true);
+    try {
+      const range = periodRange(kind, todayISO());
+      const model = buildExportModel({ txList, expenses, recurringItems, nameOf, range, today: todayISO() });
+      const bytes = format === "pdf" ? buildExportPdf(model, memberName(currentMember)) : buildExportXlsx(model);
+      const base64 = bytesToBase64(bytes);
+      const filename = `TruCent-${range.key}.${format === "pdf" ? "pdf" : "xlsx"}`;
+      const cap = typeof window !== "undefined" ? window.Capacitor : null;
+      const fs = cap?.Plugins?.Filesystem, share = cap?.Plugins?.Share;
+      if (fs && share) {
+        const written = await fs.writeFile({ path: filename, data: base64, directory: "CACHE" });
+        await share.share({ title: "TruCent statement", text: `${range.label} statement from TruCent`, url: written.uri });
+      } else if (typeof window !== "undefined") {
+        // Browser preview fallback: trigger a plain download instead of a share sheet.
+        const mime = format === "pdf" ? "application/pdf" : "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+        const a = document.createElement("a");
+        a.href = `data:${mime};base64,${base64}`;
+        a.download = filename;
+        document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      }
+      recordActivity();
+      return true;
+    } catch {
+      return false;
+    } finally {
+      setExportBusy(false);
+    }
+  };
+
+  // ---- Local notifications ----
+  const scheduleNotifications = async () => {
+    const cap = typeof window !== "undefined" ? window.Capacitor : null;
+    const ln = cap?.Plugins?.LocalNotifications;
+    if (!ln) return;
+    try {
+      const perm = await ln.requestPermissions();
+      if (perm?.display !== "granted") return;
+      const { immediate, scheduled, newKeys } = planNotifications({
+        budgetsWithSpend, goals, planned, recurringItems, notifState, today: todayISO(),
+      });
+      if (immediate.length) {
+        await ln.schedule({ notifications: immediate.map((n) => ({
+          id: hashToInt(n.key), title: n.title, body: n.body, schedule: { at: new Date(Date.now() + 1000) },
+        })) });
+      }
+      if (scheduled.length) {
+        await ln.schedule({ notifications: scheduled.map((n) => ({
+          id: n.id, title: n.title, body: n.body, schedule: { at: new Date(n.at) },
+        })) });
+      }
+      if (newKeys.length) setNotifState((prev) => ({ init: true, keys: [...new Set([...(prev.keys || []), ...newKeys])] }));
+    } catch {
+      // notification permission denied or plugin unavailable — app works fine without it
+    }
+  };
+  useEffect(() => {
+    scheduleNotifications();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [budgetsWithSpend, goals, planned, recurringItems]);
+
+  // ---- Home screen widget ----
+  const pushWidgetUpdate = async () => {
+    const cap = typeof window !== "undefined" ? window.Capacitor : null;
+    const hw = cap?.Plugins?.HomeWidget;
+    if (!hw) return;
+    try {
+      const payload = buildWidgetPayload({ income, totalSpend, saved, nextBill, streak, today: todayISO() });
+      await hw.updateWidget(payload);
+    } catch {
+      // widget plugin unavailable (e.g. browser preview) — safe to ignore
+    }
+  };
+  useEffect(() => {
+    pushWidgetUpdate();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [income, totalSpend, saved, nextBill, streak.current]);
+
   const shared = {
     expenses, settlements, recurringItems, markRecurringPaid, showForm, setShowForm,
     updateExpense, deleteExpense,
@@ -546,6 +738,12 @@ export default function TruCent() {
     plannedSorted, upcomingTotal, removePlanned, convertPlannedToExpense,
     plannedForm: { pDesc, setPDesc, pAmount, setPAmount, pCategory, setPCategory, pDate, setPDate, addPlanned },
     currentMember, setCurrentMember, monthlyTrend,
+    streak, recurringCharges, dismissRecurringCharge,
+    wrapped, wrappedKind, setWrappedKind, wrappedOpen, setWrappedOpen,
+    sendNudge, nudgePhone,
+    exportStatement, exportBusy,
+    smsSyncing, lastSmsSync, smsPreviewTx, setSmsPreviewTx,
+    nameOf,
   };
 
   return (
@@ -594,16 +792,30 @@ export default function TruCent() {
           </span>
         </div>
 
-        <button
-          onClick={() => setShowProfile((s) => !s)}
-          style={{
-            width: 34, height: 34, borderRadius: "50%", background: T.surfaceHi,
-            border: `1px solid ${showProfile ? T.borderHi : T.border}`, display: "flex", alignItems: "center", justifyContent: "center",
-            fontSize: 12.5, fontWeight: 800, color: memberColor(currentMember), flexShrink: 0,
-          }}
-        >
-          {memberName(currentMember).trim()[0]}
-        </button>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          {streak.current > 0 && (
+            <div
+              style={{
+                display: "flex", alignItems: "center", gap: 3, background: T.surfaceHi,
+                border: `1px solid ${streak.atRisk ? "#FB923C55" : T.border}`, borderRadius: 20, padding: "4px 9px 4px 7px",
+              }}
+              title={streak.atRisk ? "Log something today to keep your streak" : "Current streak"}
+            >
+              <Flame size={12} color={streak.atRisk ? T.textMute : "#FB923C"} />
+              <span style={{ fontSize: 11.5, fontWeight: 800, color: streak.atRisk ? T.textSoft : T.text }}>{streak.current}</span>
+            </div>
+          )}
+          <button
+            onClick={() => setShowProfile((s) => !s)}
+            style={{
+              width: 34, height: 34, borderRadius: "50%", background: T.surfaceHi,
+              border: `1px solid ${showProfile ? T.borderHi : T.border}`, display: "flex", alignItems: "center", justifyContent: "center",
+              fontSize: 12.5, fontWeight: 800, color: memberColor(currentMember), flexShrink: 0,
+            }}
+          >
+            {memberName(currentMember).trim()[0]}
+          </button>
+        </div>
       </div>
 
       {showProfile && (
@@ -816,6 +1028,7 @@ function HomeTab(props) {
     saved, income, totalSpend, categoryTotals, recurringMonthlyTotal, nextBill,
     spendDelta, savingsRate, settleTotal, settlements, setTab,
     overBudget, goalsTotals, plannedSorted, upcomingTotal, monthlyTrend, goals,
+    streak, recurringCharges, dismissRecurringCharge, wrapped, wrappedKind, setWrappedKind, wrappedOpen, setWrappedOpen,
   } = props;
 
   const topCat = categoryTotals[0];
@@ -909,7 +1122,46 @@ function HomeTab(props) {
           income, totalSpend, saved, savingsRate, overBudget, categoryTotals,
           goals, recurringMonthlyTotal, settlements, settleTotal, spendDelta,
         }}
+        recurringCharges={recurringCharges}
+        dismissRecurringCharge={dismissRecurringCharge}
       />
+
+      {/* Streak + Money Wrapped */}
+      <div style={{ display: "grid", gridTemplateColumns: streak.current > 0 ? "1fr 1fr" : "1fr", gap: 10, marginBottom: 16 }}>
+        {streak.current > 0 && (
+          <div style={{ ...glassCard, padding: "14px" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 8 }}>
+              <Flame size={14} color="#FB923C" />
+              <div style={{ fontSize: 10.5, color: T.textMute, fontWeight: 700 }}>STREAK</div>
+            </div>
+            <div style={{ fontSize: 17, fontWeight: 800, marginBottom: 6 }}>
+              {streak.current} day{streak.current !== 1 ? "s" : ""}
+              {streak.best > streak.current && <span style={{ fontSize: 10.5, color: T.textMute, fontWeight: 600 }}> · best {streak.best}</span>}
+            </div>
+            <div style={{ display: "flex", gap: 4 }}>
+              {streak.last7.map((d) => (
+                <div key={d.date} style={{
+                  width: 14, height: 14, borderRadius: 4,
+                  background: d.done ? "#FB923C" : T.surfaceHi,
+                  border: `1px solid ${d.done ? "#FB923C" : T.border}`,
+                }} title={d.date} />
+              ))}
+            </div>
+          </div>
+        )}
+        <button onClick={() => setWrappedOpen(true)} style={{ ...glassCard, textAlign: "left", padding: "14px", background: T.gradHero }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 8 }}>
+            <Gift size={14} color={T.gold} />
+            <div style={{ fontSize: 10.5, color: "rgba(255,255,255,0.65)", fontWeight: 700 }}>MONEY WRAPPED</div>
+          </div>
+          <div style={{ fontSize: 13.5, fontWeight: 800 }}>See your recap</div>
+          <div style={{ fontSize: 10.5, color: "rgba(255,255,255,0.6)", marginTop: 2 }}>Top category, biggest win & more</div>
+        </button>
+      </div>
+
+      {wrappedOpen && (
+        <WrappedModal wrapped={wrapped} kind={wrappedKind} setKind={setWrappedKind} onClose={() => setWrappedOpen(false)} />
+      )}
 
       {/* Insight chips */}
       <div style={{ display: "flex", gap: 8, overflowX: "auto", marginBottom: 16, paddingBottom: 2 }}>
@@ -965,7 +1217,7 @@ function HomeTab(props) {
             <>
               <div style={{ fontSize: 17, fontWeight: 800 }}>{inr(nextBill.amount)}</div>
               <div style={{ fontSize: 10.5, color: T.textSoft, marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                {nextBill.desc} · {daysUntil(nextBill.everyMonthDay) === 0 ? "due today" : `in ${daysUntil(nextBill.everyMonthDay)}d`}
+                {nextBill.name} · {nextBill.days <= 0 ? "due today" : `in ${nextBill.days}d`}
               </div>
             </>
           ) : <div style={{ fontSize: 13, color: T.textSoft }}>Nothing due</div>}
@@ -1085,7 +1337,7 @@ function HomeTab(props) {
 // on-device computation, so the multi-step reasoning is visible even though
 // it all runs locally in milliseconds. No network call happens at any point.
 // ---------------------------------------------------------------------------
-function MoneyCoachCard({ coachData, setTab }) {
+function MoneyCoachCard({ coachData, setTab, recurringCharges, dismissRecurringCharge }) {
   const [stage, setStage] = useState("idle"); // idle | running | empty | done
   const [stepIndex, setStepIndex] = useState(0);
   const [report, setReport] = useState(null);
@@ -1205,6 +1457,35 @@ function MoneyCoachCard({ coachData, setTab }) {
             })}
           </div>
 
+          {recurringCharges && recurringCharges.length > 0 && (
+            <div style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 8 }}>
+              <div style={{ fontSize: 10.5, fontWeight: 700, color: T.textMute, letterSpacing: 0.3 }}>
+                STILL PAYING FOR THESE?
+              </div>
+              {recurringCharges.map((c) => (
+                <div key={c.key} style={{ background: T.surfaceHi, borderRadius: 12, padding: "11px 12px" }}>
+                  <div style={{ display: "flex", gap: 8, alignItems: "flex-start" }}>
+                    <div style={{ width: 24, height: 24, borderRadius: 7, background: T.gold + "22", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, marginTop: 1 }}>
+                      <RotateCcw size={12} color={T.gold} />
+                    </div>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: 12.5, fontWeight: 700, marginBottom: 3 }}>{c.name}</div>
+                      <div style={{ fontSize: 11, color: T.textSoft, lineHeight: 1.45 }}>
+                        {inr(c.amount)} repeated {c.count} months running — about {inr(c.yearly)}/year. Haven't flagged it as recurring yet.
+                      </div>
+                      <button
+                        onClick={() => dismissRecurringCharge(c.key)}
+                        style={{ marginTop: 7, border: "none", background: "transparent", color: T.gold, fontSize: 11, fontWeight: 700, display: "flex", alignItems: "center", gap: 3, padding: 0 }}
+                      >
+                        Still using it, got it <Check size={11} />
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
           <button onClick={() => setStage("idle")} style={{ border: "none", background: "transparent", color: T.textMute, fontSize: 11, fontWeight: 700, marginTop: 12, padding: 0 }}>
             Run again
           </button>
@@ -1217,15 +1498,139 @@ function MoneyCoachCard({ coachData, setTab }) {
 // ---------------------------------------------------------------------------
 // SPLIT & TRACK
 // ---------------------------------------------------------------------------
-function SplitTab({ expenses, settlements, showForm, setShowForm, form, addExpense, updateExpense, deleteExpense }) {
+// ---------------------------------------------------------------------------
+// Money Wrapped — a Spotify-Wrapped-style recap. Every number here is read
+// straight off computeWrapped() in lib.js; nothing is invented for effect.
+// ---------------------------------------------------------------------------
+function WrappedModal({ wrapped, kind, setKind, onClose }) {
+  const c = wrapped.cur;
+  const tabs = [
+    { id: "month", label: "This month" },
+    { id: "lastMonth", label: "Last month" },
+    { id: "year", label: "This year" },
+  ];
+  return (
+    <div style={{
+      position: "fixed", inset: 0, background: "rgba(5,5,8,0.85)", zIndex: 50,
+      display: "flex", alignItems: "center", justifyContent: "center", padding: 16,
+    }} onClick={onClose}>
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          width: "100%", maxWidth: 380, maxHeight: "88vh", overflowY: "auto", borderRadius: 24,
+          background: "linear-gradient(160deg, #1B1730 0%, #2A1740 45%, #3A1830 100%)",
+          border: `1px solid ${T.borderHi}`, padding: 22, position: "relative",
+        }}
+      >
+        <button onClick={onClose} style={{ position: "absolute", top: 14, right: 14, border: "none", background: T.surfaceHi, borderRadius: "50%", width: 28, height: 28, display: "flex", alignItems: "center", justifyContent: "center" }}>
+          <X size={14} color={T.textSoft} />
+        </button>
+
+        <div style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 4 }}>
+          <Gift size={16} color={T.gold} />
+          <span style={{ fontSize: 12, fontWeight: 800, color: T.gold, letterSpacing: 0.3 }}>MONEY WRAPPED</span>
+        </div>
+        <div style={{ fontSize: 18, fontWeight: 800, marginBottom: 14 }}>{wrapped.range.label}</div>
+
+        <div style={{ display: "flex", gap: 6, marginBottom: 18 }}>
+          {tabs.map((t) => (
+            <button key={t.id} onClick={() => setKind(t.id)} style={{
+              border: "none", borderRadius: 20, padding: "5px 11px", fontSize: 11, fontWeight: 700,
+              background: kind === t.id ? T.gradPrimary : T.surfaceHi, color: kind === t.id ? "#fff" : T.textSoft,
+            }}>
+              {t.label}
+            </button>
+          ))}
+        </div>
+
+        {!wrapped.hasData ? (
+          <div style={{ fontSize: 13, color: T.textSoft, lineHeight: 1.6, padding: "20px 0" }}>
+            Nothing logged for this period yet — connect SMS or add a few transactions, then check back.
+          </div>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+            {wrapped.win && (
+              <div style={{ background: "rgba(251,191,36,0.1)", border: "1px solid rgba(251,191,36,0.3)", borderRadius: 16, padding: 16 }}>
+                <div style={{ fontSize: 10.5, fontWeight: 700, color: T.gold, marginBottom: 4, letterSpacing: 0.3 }}>BIGGEST WIN</div>
+                <div style={{ fontSize: 16, fontWeight: 800, marginBottom: 3 }}>{wrapped.win.title}</div>
+                <div style={{ fontSize: 11.5, color: T.textSoft }}>{wrapped.win.detail}</div>
+              </div>
+            )}
+
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+              <div style={{ background: T.surfaceHi, borderRadius: 14, padding: 14 }}>
+                <div style={{ fontSize: 10, color: T.textMute, fontWeight: 700, marginBottom: 4 }}>EARNED</div>
+                <div style={{ fontSize: 16, fontWeight: 800, color: T.green }}>{inr(c.income)}</div>
+              </div>
+              <div style={{ background: T.surfaceHi, borderRadius: 14, padding: 14 }}>
+                <div style={{ fontSize: 10, color: T.textMute, fontWeight: 700, marginBottom: 4 }}>SPENT</div>
+                <div style={{ fontSize: 16, fontWeight: 800, color: T.red }}>{inr(c.spend)}</div>
+              </div>
+            </div>
+
+            {c.topCategory && (
+              <div style={{ background: T.surfaceHi, borderRadius: 14, padding: 14 }}>
+                <div style={{ fontSize: 10, color: T.textMute, fontWeight: 700, marginBottom: 6 }}>TOP CATEGORY</div>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  {(() => { const Icon = CATEGORY_META[c.topCategory.category]?.icon || Wallet; return <Icon size={16} color={CATEGORY_META[c.topCategory.category]?.color || T.textSoft} />; })()}
+                  <div style={{ fontSize: 14, fontWeight: 700 }}>{c.topCategory.category}</div>
+                  <div style={{ marginLeft: "auto", fontSize: 13, fontWeight: 800, color: T.gold }}>{c.topCategory.pct.toFixed(0)}%</div>
+                </div>
+              </div>
+            )}
+
+            {c.topMerchant && (
+              <div style={{ background: T.surfaceHi, borderRadius: 14, padding: 14 }}>
+                <div style={{ fontSize: 10, color: T.textMute, fontWeight: 700, marginBottom: 4 }}>MOST VISITED</div>
+                <div style={{ fontSize: 14, fontWeight: 700 }}>{c.topMerchant.name}</div>
+                <div style={{ fontSize: 11, color: T.textSoft, marginTop: 2 }}>{c.topMerchant.n} transactions · {inr(c.topMerchant.total)} total</div>
+              </div>
+            )}
+
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+              <div style={{ background: T.surfaceHi, borderRadius: 14, padding: 14 }}>
+                <div style={{ fontSize: 10, color: T.textMute, fontWeight: 700, marginBottom: 4 }}>SAVING STREAK</div>
+                <div style={{ fontSize: 16, fontWeight: 800 }}>{wrapped.savingsStreak} month{wrapped.savingsStreak !== 1 ? "s" : ""}</div>
+              </div>
+              <div style={{ background: T.surfaceHi, borderRadius: 14, padding: 14 }}>
+                <div style={{ fontSize: 10, color: T.textMute, fontWeight: 700, marginBottom: 4 }}>LOGGING STREAK</div>
+                <div style={{ fontSize: 16, fontWeight: 800 }}>{wrapped.streak.current} day{wrapped.streak.current !== 1 ? "s" : ""}</div>
+              </div>
+            </div>
+
+            {c.refunds > 0 && (
+              <div style={{ fontSize: 11.5, color: T.textSoft, textAlign: "center" }}>
+                Plus {inr(c.refunds)} came back to you in refunds this period.
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function SplitTab({ expenses, settlements, showForm, setShowForm, form, addExpense, updateExpense, deleteExpense, sendNudge, nudgePhone }) {
   const oneOffExpenses = expenses.filter((e) => !e.recurring);
 
   const [editingId, setEditingId] = useState(null);
   const [eDesc, setEDesc] = useState("");
   const [eAmount, setEAmount] = useState("");
-  const [eCategory, setECategory] = useState(CATEGORY_LIST[0]);
+  const [eCategory, setECategory] = useState(EXPENSE_CATEGORY_LIST[0]);
   const [ePaidBy, setEPaidBy] = useState("you");
   const [eSplit, setESplit] = useState([]);
+
+  const [nudgingIdx, setNudgingIdx] = useState(null);
+  const [nudgePhoneInput, setNudgePhoneInput] = useState("");
+  const startNudge = (s, idx) => {
+    if (nudgePhone[s.from]) { sendNudge(s); return; }
+    setNudgingIdx(idx); setNudgePhoneInput("");
+  };
+  const confirmNudge = (s) => {
+    if (!nudgePhoneInput.trim()) return;
+    sendNudge(s, nudgePhoneInput.trim());
+    setNudgingIdx(null);
+  };
 
   const startEdit = (e) => {
     setEditingId(e.id); setEDesc(e.desc); setEAmount(String(e.amount));
@@ -1248,16 +1653,40 @@ function SplitTab({ expenses, settlements, showForm, setShowForm, form, addExpen
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 22 }}>
           {settlements.map((s, i) => (
-            <div key={i} style={{ ...glassCard, display: "flex", alignItems: "center", gap: 10, padding: "12px 14px" }}>
-              <Avatar id={s.from} />
-              <div style={{ flex: 1, fontSize: 13.5, color: T.textSoft }}>
-                <b style={{ color: T.text }}>{memberName(s.from)}</b> owes <b style={{ color: T.text }}>{memberName(s.to)}</b>
+            <div key={i} style={{ ...glassCard, padding: "12px 14px" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <Avatar id={s.from} />
+                <div style={{ flex: 1, fontSize: 13.5, color: T.textSoft }}>
+                  <b style={{ color: T.text }}>{memberName(s.from)}</b> owes <b style={{ color: T.text }}>{memberName(s.to)}</b>
+                </div>
+                <ArrowRight size={14} color={T.textMute} />
+                <Avatar id={s.to} />
+                <div style={{ marginLeft: 4, fontWeight: 800, fontSize: 15, background: T.gradGold, WebkitBackgroundClip: "text", backgroundClip: "text", color: "transparent" }}>
+                  {inr(s.amount)}
+                </div>
+                <button onClick={() => startNudge(s, i)} title="Nudge on WhatsApp" style={{
+                  border: "none", background: "rgba(37,211,102,0.15)", borderRadius: 8, padding: "6px 8px",
+                  display: "flex", alignItems: "center", justifyContent: "center", marginLeft: 4,
+                }}>
+                  <MessageCircle size={13} color="#25D366" />
+                </button>
               </div>
-              <ArrowRight size={14} color={T.textMute} />
-              <Avatar id={s.to} />
-              <div style={{ marginLeft: 4, fontWeight: 800, fontSize: 15, background: T.gradGold, WebkitBackgroundClip: "text", backgroundClip: "text", color: "transparent" }}>
-                {inr(s.amount)}
-              </div>
+              {nudgingIdx === i && (
+                <div style={{ display: "flex", gap: 6, marginTop: 10 }}>
+                  <input
+                    value={nudgePhoneInput}
+                    onChange={(e) => setNudgePhoneInput(e.target.value)}
+                    placeholder={`${memberName(s.from)}'s WhatsApp number`}
+                    style={{ ...inputStyle, flex: 1, padding: "7px 10px", fontSize: 12 }}
+                  />
+                  <button onClick={() => confirmNudge(s)} style={{ border: "none", borderRadius: 8, background: "#25D366", color: "#07280F", padding: "0 12px", fontSize: 12, fontWeight: 700 }}>
+                    Send
+                  </button>
+                  <button onClick={() => setNudgingIdx(null)} style={{ ...iconBtn, background: T.surfaceHi, borderRadius: 8, padding: "7px 9px" }}>
+                    <X size={12} color={T.textMute} />
+                  </button>
+                </div>
+              )}
             </div>
           ))}
         </div>
@@ -1292,7 +1721,7 @@ function SplitTab({ expenses, settlements, showForm, setShowForm, form, addExpen
               <input placeholder="Amount" type="number" value={form.fAmount} onChange={(e) => form.setFAmount(e.target.value)} style={{ ...inputStyle, paddingLeft: 24 }} />
             </div>
             <select value={form.fCategory} onChange={(e) => form.setFCategory(e.target.value)} style={{ ...inputStyle, flex: 1 }}>
-              {CATEGORY_LIST.map((c) => <option key={c}>{c}</option>)}
+              {EXPENSE_CATEGORY_LIST.map((c) => <option key={c}>{c}</option>)}
             </select>
           </div>
           <div>
@@ -1342,7 +1771,7 @@ function SplitTab({ expenses, settlements, showForm, setShowForm, form, addExpen
                     <input type="number" value={eAmount} onChange={(ev) => setEAmount(ev.target.value)} style={{ ...inputStyle, paddingLeft: 24 }} />
                   </div>
                   <select value={eCategory} onChange={(ev) => setECategory(ev.target.value)} style={{ ...inputStyle, flex: 1 }}>
-                    {CATEGORY_LIST.map((c) => <option key={c}>{c}</option>)}
+                    {EXPENSE_CATEGORY_LIST.map((c) => <option key={c}>{c}</option>)}
                   </select>
                 </div>
                 <div>
@@ -1423,7 +1852,7 @@ function PlanTab({
         <div style={{ ...glassCard, padding: 16, marginBottom: 12, display: "flex", flexDirection: "column", gap: 11 }}>
           <div style={{ display: "flex", gap: 8 }}>
             <select value={budgetForm.bCategory} onChange={(e) => budgetForm.setBCategory(e.target.value)} style={{ ...inputStyle, flex: 1 }}>
-              {CATEGORY_LIST.map((c) => <option key={c}>{c}</option>)}
+              {EXPENSE_CATEGORY_LIST.map((c) => <option key={c}>{c}</option>)}
             </select>
             <div style={{ position: "relative", flex: 1 }}>
               <span style={{ position: "absolute", left: 12, top: 11, fontSize: 13, color: T.textMute }}>₹</span>
@@ -1558,7 +1987,7 @@ function PlanTab({
                 onChange={(e) => plannedForm.setPAmount(e.target.value)} style={{ ...inputStyle, paddingLeft: 24 }} />
             </div>
             <select value={plannedForm.pCategory} onChange={(e) => plannedForm.setPCategory(e.target.value)} style={{ ...inputStyle, flex: 1 }}>
-              {CATEGORY_LIST.map((c) => <option key={c}>{c}</option>)}
+              {EXPENSE_CATEGORY_LIST.map((c) => <option key={c}>{c}</option>)}
             </select>
           </div>
           <input type="date" value={plannedForm.pDate} onChange={(e) => plannedForm.setPDate(e.target.value)} style={inputStyle} />
@@ -1593,6 +2022,11 @@ function PlanTab({
                 <div style={{ display: "flex", gap: 6, marginTop: 4, alignItems: "center", flexWrap: "wrap" }}>
                   <CategoryTag category={p.category} />
                   <span style={{ fontSize: 10.5, color: T.textMute }}>{p.dueDate}</span>
+                  {p.fromSms && (
+                    <span style={{ display: "inline-flex", alignItems: "center", gap: 3, fontSize: 9.5, fontWeight: 700, color: T.textMute }}>
+                      <Smartphone size={9} /> from SMS
+                    </span>
+                  )}
                 </div>
               </div>
               <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 6 }}>
@@ -1648,15 +2082,19 @@ const iconBtn = {
 function BurnTab({
   txList, totalSpend, categoryTotals, updateTxCategory, recurringItems, markRecurringPaid,
   personalRecurringTx, offlineForm, removeTx, monthlyTrend, smsStatus, importFromSms,
+  smsSyncing, lastSmsSync, smsPreviewTx, setSmsPreviewTx, exportStatement, exportBusy,
 }) {
   const [showOfflineForm, setShowOfflineForm] = useState(false);
+  const [showExport, setShowExport] = useState(false);
   const maxCat = categoryTotals[0]?.amount || 1;
   const paymentModes = ["Cash", "Card", "Cheque", "UPI (not detected)", "Other"];
   return (
     <div>
       <h2 style={{ fontSize: 20, fontWeight: 800, margin: "2px 0 16px", letterSpacing: -0.4 }}>Where It Went</h2>
 
-      <SmsConnectCard status={smsStatus} onConnect={importFromSms} />
+      <SmsConnectCard status={smsStatus} onConnect={importFromSms} syncing={smsSyncing} lastSync={lastSmsSync} />
+
+      {smsPreviewTx && <SmsPreviewModal tx={smsPreviewTx} onClose={() => setSmsPreviewTx(null)} />}
 
       <SectionTitle>Recurring bills · rent, subscriptions, memberships</SectionTitle>
       <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 22 }}>
@@ -1738,7 +2176,7 @@ function BurnTab({
                 onChange={(e) => offlineForm.setOAmount(e.target.value)} style={{ ...inputStyle, paddingLeft: 24 }} />
             </div>
             <select value={offlineForm.oCategory} onChange={(e) => offlineForm.setOCategory(e.target.value)} style={{ ...inputStyle, flex: 1 }}>
-              {CATEGORY_LIST.map((c) => <option key={c}>{c}</option>)}
+              {EXPENSE_CATEGORY_LIST.map((c) => <option key={c}>{c}</option>)}
             </select>
           </div>
           <div>
@@ -1798,33 +2236,114 @@ function BurnTab({
         </ResponsiveContainer>
       </div>
 
-      <SectionTitle>All transactions</SectionTitle>
+      <SectionTitle action={
+        <button onClick={() => setShowExport((s) => !s)} style={navAddBtn(showExport)}>
+          {showExport ? <X size={13} /> : <Share2 size={13} />} {showExport ? "Close" : "Export"}
+        </button>
+      }>
+        All transactions
+      </SectionTitle>
+
+      {showExport && (
+        <div style={{ ...glassCard, padding: 14, marginBottom: 14, display: "flex", flexDirection: "column", gap: 8 }}>
+          <div style={{ fontSize: 11, color: T.textSoft, marginBottom: 2 }}>
+            Builds a statement for this month and opens your phone's share sheet — pick Email, WhatsApp, Drive, whatever you've got.
+          </div>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button disabled={exportBusy} onClick={() => exportStatement("xlsx", "month")} style={{ ...primaryBtn, marginTop: 0, flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 6, opacity: exportBusy ? 0.6 : 1 }}>
+              <FileSpreadsheet size={13} /> Excel
+            </button>
+            <button disabled={exportBusy} onClick={() => exportStatement("pdf", "month")} style={{ ...primaryBtn, marginTop: 0, flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 6, opacity: exportBusy ? 0.6 : 1 }}>
+              <FileText size={13} /> PDF
+            </button>
+          </div>
+        </div>
+      )}
+
       <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
         {txList.length === 0 && <EmptyHint text="Nothing yet — connect SMS above, or log an offline expense below." />}
-        {txList.map((t) => (
-          <div key={t.id} style={{ display: "flex", alignItems: "center", gap: 9, padding: "10px 6px", borderBottom: `1px solid ${T.border}` }}>
-            <div style={{ width: 28, height: 28, borderRadius: 9, background: T.surfaceHi, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-              {t.manual ? <Receipt size={13} color={T.gold} /> : <Smartphone size={13} color={T.textSoft} />}
+        {txList.map((t) => {
+          // Money IN is any negative-amount entry — income or a refund — not
+          // just the Income category. The old check only looked at category,
+          // which meant refunds (e.g. "Shopping", amount -649) rendered with
+          // a "−" sign and default color, looking identical to a real expense.
+          const isMoneyIn = t.amount < 0;
+          const hasFullText = !!t.body;
+          return (
+            <div
+              key={t.id}
+              onClick={() => hasFullText && setSmsPreviewTx(t)}
+              style={{
+                display: "flex", alignItems: "center", gap: 9, padding: "10px 6px", borderBottom: `1px solid ${T.border}`,
+                cursor: hasFullText ? "pointer" : "default",
+              }}
+            >
+              <div style={{ width: 28, height: 28, borderRadius: 9, background: T.surfaceHi, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                {t.manual ? <Receipt size={13} color={T.gold} /> : <Smartphone size={13} color={T.textSoft} />}
+              </div>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 12.5, fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", display: "flex", alignItems: "center", gap: 5 }}>
+                  {t.desc}
+                  {t.type === "refund" && (
+                    <span style={{ fontSize: 9, fontWeight: 800, color: T.green, background: "rgba(52,211,153,0.15)", borderRadius: 5, padding: "1px 5px" }}>REFUND</span>
+                  )}
+                </div>
+                <div style={{ fontSize: 10.5, color: T.textMute }}>{t.source} · {t.date}</div>
+              </div>
+              {t.category !== "Income" ? (
+                <CategorySelect value={t.category} onChange={(cat) => updateTxCategory(t.id, cat)} />
+              ) : <CategoryTag category="Income" />}
+              <div style={{ fontWeight: 800, fontSize: 13, width: 68, textAlign: "right", color: isMoneyIn ? T.green : T.text }}>
+                {isMoneyIn ? "+" : "−"}{inr(t.amount)}
+              </div>
+              {hasFullText && <Eye size={12} color={T.textMute} style={{ flexShrink: 0 }} />}
+              {t.manual && <button onClick={(e) => { e.stopPropagation(); removeTx(t.id); }} style={iconBtn}><Trash2 size={12} color={T.textMute} /></button>}
             </div>
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <div style={{ fontSize: 12.5, fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{t.desc}</div>
-              <div style={{ fontSize: 10.5, color: T.textMute }}>{t.source} · {t.date}</div>
-            </div>
-            {t.category !== "Income" ? (
-              <CategorySelect value={t.category} onChange={(cat) => updateTxCategory(t.id, cat)} />
-            ) : <CategoryTag category="Income" />}
-            <div style={{ fontWeight: 800, fontSize: 13, width: 68, textAlign: "right", color: t.category === "Income" ? T.green : T.text }}>
-              {t.category === "Income" ? "+" : "−"}{inr(t.amount)}
-            </div>
-            {t.manual && <button onClick={() => removeTx(t.id)} style={iconBtn}><Trash2 size={12} color={T.textMute} /></button>}
-          </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );
 }
 
-function SmsConnectCard({ status, onConnect }) {
+function SmsPreviewModal({ tx, onClose }) {
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(5,5,8,0.8)", zIndex: 50, display: "flex", alignItems: "flex-end", justifyContent: "center" }} onClick={onClose}>
+      <div onClick={(e) => e.stopPropagation()} style={{
+        width: "100%", maxWidth: 480, background: T.surfaceHi, borderTopLeftRadius: 22, borderTopRightRadius: 22,
+        border: `1px solid ${T.borderHi}`, borderBottom: "none", padding: 20, maxHeight: "70vh", overflowY: "auto",
+      }}>
+        <div style={{ width: 36, height: 4, borderRadius: 2, background: T.border, margin: "0 auto 14px" }} />
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
+          <div style={{ fontSize: 13.5, fontWeight: 800 }}>Original message</div>
+          <button onClick={onClose} style={{ ...iconBtn, background: T.surface, borderRadius: "50%", width: 26, height: 26 }}>
+            <X size={13} color={T.textMute} />
+          </button>
+        </div>
+        <div style={{ fontSize: 11, color: T.textMute, marginBottom: 10 }}>{tx.sender || tx.source} · {tx.date}</div>
+        <div style={{ background: T.surface, borderRadius: 12, padding: 14, fontSize: 13, lineHeight: 1.6, color: T.textSoft, whiteSpace: "pre-wrap" }}>
+          {tx.body}
+        </div>
+        <div style={{ marginTop: 12, fontSize: 11, color: T.textMute }}>
+          Parsed as: <b style={{ color: T.textSoft }}>{inr(Math.abs(tx.amount))}</b> · {tx.category} — if that's wrong, use the category dropdown to fix it.
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function timeAgo(ms) {
+  if (!ms) return null;
+  const diff = Math.max(0, Date.now() - ms);
+  const mins = Math.floor(diff / 60000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  return `${Math.floor(hrs / 24)}d ago`;
+}
+
+function SmsConnectCard({ status, onConnect, syncing, lastSync }) {
   const [debugInfo, setDebugInfo] = useState(null);
 
   useEffect(() => {
@@ -1848,9 +2367,14 @@ function SmsConnectCard({ status, onConnect }) {
         <div style={{ width: 32, height: 32, borderRadius: 9, background: "rgba(52,211,153,0.18)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
           <Check size={15} color={T.green} />
         </div>
-        <div style={{ flex: 1, fontSize: 12, color: T.textSoft }}>SMS connected — new transactions sync automatically.</div>
-        <button onClick={onConnect} style={{ ...iconBtn, background: T.surfaceHi, borderRadius: 8, padding: "6px 9px" }}>
-          <Smartphone size={12} color={T.textMute} />
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontSize: 12, color: T.textSoft }}>SMS connected</div>
+          <div style={{ fontSize: 10.5, color: T.textMute, marginTop: 1 }}>
+            {syncing ? "Syncing…" : lastSync ? `Synced ${timeAgo(lastSync)}` : "Not synced yet"}
+          </div>
+        </div>
+        <button onClick={onConnect} disabled={syncing} title="Check for new messages" style={{ ...iconBtn, background: T.surfaceHi, borderRadius: 8, padding: "7px" }}>
+          <RefreshCw size={14} color={T.textSoft} className={syncing ? "coach-spin" : ""} />
         </button>
       </div>
     );

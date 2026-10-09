@@ -14,6 +14,7 @@ public class MainActivity extends BridgeActivity {
         // finalizes its plugin registry during super.onCreate(), so anything
         // registered after that point never reaches window.Capacitor.Plugins.
         registerPlugin(SmsReaderPlugin.class);
+        registerPlugin(HomeWidgetPlugin.class);
         super.onCreate(savedInstanceState);
     }
 }

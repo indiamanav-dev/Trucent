@@ -53,17 +53,28 @@ jobs:
             fi
           done
 
-      - name: Drop in the SMS-reading plugin
+      - name: Drop in the SMS-reading plugin and the home screen widget
         run: |
           mkdir -p android/app/src/main/java/com/trucent/app
           cp android-sms-plugin/java/com/trucent/app/SmsReaderPlugin.java \
              android/app/src/main/java/com/trucent/app/SmsReaderPlugin.java
           cp android-sms-plugin/MainActivity-example.java \
              android/app/src/main/java/com/trucent/app/MainActivity.java
+          cp android-widget/java/com/trucent/app/TruCentWidgetProvider.java \
+             android/app/src/main/java/com/trucent/app/TruCentWidgetProvider.java
+          cp android-widget/java/com/trucent/app/HomeWidgetPlugin.java \
+             android/app/src/main/java/com/trucent/app/HomeWidgetPlugin.java
+          mkdir -p android/app/src/main/res/layout android/app/src/main/res/xml android/app/src/main/res/drawable android/app/src/main/res/values
+          cp android-widget/res/layout/widget_trucent.xml android/app/src/main/res/layout/widget_trucent.xml
+          cp android-widget/res/xml/trucent_widget_info.xml android/app/src/main/res/xml/trucent_widget_info.xml
+          cp android-widget/res/drawable/widget_background.xml android/app/src/main/res/drawable/widget_background.xml
+          cp android-widget/res/values/widget_strings.xml android/app/src/main/res/values/widget_strings.xml
 
-      - name: Add SMS permissions to the Android manifest
+      - name: Add SMS permissions and widget receiver to the Android manifest
         run: |
           sed -i '/<manifest/a\    <uses-permission android:name="android.permission.READ_SMS" />\n    <uses-permission android:name="android.permission.RECEIVE_SMS" />' \
+            android/app/src/main/AndroidManifest.xml
+          sed -i '/<\/application>/i\        <receiver android:name="com.trucent.app.TruCentWidgetProvider" android:exported="false">\n            <intent-filter>\n                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />\n            </intent-filter>\n            <meta-data android:name="android.appwidget.provider" android:resource="@xml/trucent_widget_info" />\n        </receiver>' \
             android/app/src/main/AndroidManifest.xml
 
       - name: Sync Capacitor
