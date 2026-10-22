@@ -18,6 +18,7 @@ import {
   planNotifications, buildNudgeText, waLink, buildWidgetPayload,
   buildExportModel, buildExportXlsx, buildExportPdf, bytesToBase64, ordinal,
   daysUntilDate, hashToInt,
+  buildGroupLedgerModel, buildGroupLedgerXlsx, buildGroupLedgerPdf,
 } from "./lib.js";
 
 // ---------------------------------------------------------------------------
@@ -69,10 +70,21 @@ const EXPENSE_CATEGORY_LIST = CATEGORY_LIST.filter((c) => c !== "Income");
 
 // `let` (not `const`) so members can be added/edited/removed at runtime — see
 // addMember / updateMember / deleteMember in the App shell, which mutate this
-// array and bump a tick counter to force a re-render.
-// V-001.P — production build: single default profile ("You"), no seed data.
-// Add more group members from the profile switcher after install.
-let MEMBERS = [{ id: "you", name: "You", color: "#FBBF24" }];
+// array, persist it to localStorage (see saveMembers below), and bump a tick
+// counter to force a re-render.
+//
+// This is read from localStorage on load, same as every other persisted list
+// in the app (expenses, goals, etc.) — it used to default to the seed value
+// on every launch, which silently reset the group back to just "You" any
+// time the app was closed and reopened. Existing ledger entries still
+// referenced the vanished member ids, so their amounts looked "squared off"
+// even though the actual expense data was untouched — the member records
+// those ids pointed to had just disappeared. loadLS/saveLS are declared
+// further down but are `function` declarations, so they're hoisted and
+// callable here regardless of source order.
+const MEMBERS_KEY = "trucent_members";
+let MEMBERS = loadLS(MEMBERS_KEY, [{ id: "you", name: "You", color: "#FBBF24" }]);
+function saveMembers() { saveLS(MEMBERS_KEY, MEMBERS); }
 
 const MEMBER_PALETTE = ["#8B5CF6", "#EC4899", "#FBBF24", "#34D399", "#60A5FA", "#F97316", "#14B8A6", "#F472B6"];
 
@@ -326,7 +338,7 @@ function SectionTitle({ children, action }) {
 // ---------------------------------------------------------------------------
 export default function TruCent() {
   const [tab, setTab] = useState("home");
-  const [currentMember, setCurrentMember] = useState("you");
+  const [currentMember, setCurrentMember] = usePersistentState("trucent_current_member", "you");
   const [showProfile, setShowProfile] = useState(false);
   const [, setMembersTick] = useState(0); // bump to re-render after mutating the module-level MEMBERS array
   const [expenses, setExpenses] = usePersistentState("trucent_expenses", seedExpenses);
@@ -408,16 +420,19 @@ export default function TruCent() {
   const addMember = (name, color) => {
     if (!name.trim()) return;
     MEMBERS.push({ id: "m" + Date.now(), name: name.trim(), color: color || MEMBER_PALETTE[MEMBERS.length % MEMBER_PALETTE.length] });
+    saveMembers();
     setMembersTick((t) => t + 1);
   };
   const updateMember = (id, updates) => {
     const m = MEMBERS.find((x) => x.id === id);
     if (m) Object.assign(m, updates);
+    saveMembers();
     setMembersTick((t) => t + 1);
   };
   const deleteMember = (id) => {
     if (MEMBERS.length <= 1) return; // always keep at least one profile
     MEMBERS = MEMBERS.filter((m) => m.id !== id);
+    saveMembers();
     setFSplit((prev) => prev.filter((x) => x !== id));
     if (currentMember === id) setCurrentMember(MEMBERS[0].id);
     if (fPaidBy === id) setFPaidBy(MEMBERS[0].id);
@@ -644,27 +659,62 @@ export default function TruCent() {
   // since that's exactly what Android's native share sheet already offers —
   // rather than hardcoding separate per-app buttons.
   const [exportBusy, setExportBusy] = useState(false);
+
+  // Shared by every export: write the file, then hand it to the native share
+  // sheet (or fall back to a plain browser download in the web preview).
+  const shareFile = async ({ bytes, filename, mime, title, text }) => {
+    const base64 = bytesToBase64(bytes);
+    const cap = typeof window !== "undefined" ? window.Capacitor : null;
+    const fs = cap?.Plugins?.Filesystem, share = cap?.Plugins?.Share;
+    if (fs && share) {
+      const written = await fs.writeFile({ path: filename, data: base64, directory: "CACHE" });
+      await share.share({ title, text, url: written.uri });
+    } else if (typeof window !== "undefined") {
+      const a = document.createElement("a");
+      a.href = `data:${mime};base64,${base64}`;
+      a.download = filename;
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    }
+  };
+  const XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+
   const exportStatement = async (format, kind) => {
     setExportBusy(true);
     try {
       const range = periodRange(kind, todayISO());
       const model = buildExportModel({ txList, expenses, recurringItems, nameOf, range, today: todayISO() });
       const bytes = format === "pdf" ? buildExportPdf(model, memberName(currentMember)) : buildExportXlsx(model);
-      const base64 = bytesToBase64(bytes);
-      const filename = `TruCent-${range.key}.${format === "pdf" ? "pdf" : "xlsx"}`;
-      const cap = typeof window !== "undefined" ? window.Capacitor : null;
-      const fs = cap?.Plugins?.Filesystem, share = cap?.Plugins?.Share;
-      if (fs && share) {
-        const written = await fs.writeFile({ path: filename, data: base64, directory: "CACHE" });
-        await share.share({ title: "TruCent statement", text: `${range.label} statement from TruCent`, url: written.uri });
-      } else if (typeof window !== "undefined") {
-        // Browser preview fallback: trigger a plain download instead of a share sheet.
-        const mime = format === "pdf" ? "application/pdf" : "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
-        const a = document.createElement("a");
-        a.href = `data:${mime};base64,${base64}`;
-        a.download = filename;
-        document.body.appendChild(a); a.click(); document.body.removeChild(a);
-      }
+      await shareFile({
+        bytes, filename: `TruCent-${range.key}.${format === "pdf" ? "pdf" : "xlsx"}`,
+        mime: format === "pdf" ? "application/pdf" : XLSX_MIME,
+        title: "TruCent statement", text: `${range.label} statement from TruCent`,
+      });
+      recordActivity();
+      return true;
+    } catch {
+      return false;
+    } finally {
+      setExportBusy(false);
+    }
+  };
+
+  // Group ledger: shared one-off expenses + who owes whom. The share message
+  // itself spells out the outstanding amounts, so whoever receives it (e.g. in
+  // a WhatsApp group) can see what's owed without even opening the attachment.
+  const exportGroupLedger = async (format) => {
+    setExportBusy(true);
+    try {
+      const model = buildGroupLedgerModel({ expenses, settlements, members: MEMBERS, nameOf, today: todayISO() });
+      const bytes = format === "pdf" ? buildGroupLedgerPdf(model, memberName(currentMember)) : buildGroupLedgerXlsx(model);
+      const lines = model.settleRows.length
+        ? model.settleRows.map(([from, to, amt]) => `• ${from} owes ${to} ${inr(amt)}`)
+        : ["Everyone's square — nothing outstanding."];
+      const text = `Group ledger from TruCent — ${model.count} shared expense${model.count !== 1 ? "s" : ""}, ${inr(model.totalSpend)} total.\n\nOutstanding:\n${lines.join("\n")}\n\nFull ledger attached.`;
+      await shareFile({
+        bytes, filename: `TruCent-group-ledger-${todayISO()}.${format === "pdf" ? "pdf" : "xlsx"}`,
+        mime: format === "pdf" ? "application/pdf" : XLSX_MIME,
+        title: "TruCent group ledger", text,
+      });
       recordActivity();
       return true;
     } catch {
@@ -741,7 +791,7 @@ export default function TruCent() {
     streak, recurringCharges, dismissRecurringCharge,
     wrapped, wrappedKind, setWrappedKind, wrappedOpen, setWrappedOpen,
     sendNudge, nudgePhone,
-    exportStatement, exportBusy,
+    exportStatement, exportGroupLedger, exportBusy,
     smsSyncing, lastSmsSync, smsPreviewTx, setSmsPreviewTx,
     nameOf,
   };
@@ -1610,8 +1660,9 @@ function WrappedModal({ wrapped, kind, setKind, onClose }) {
   );
 }
 
-function SplitTab({ expenses, settlements, showForm, setShowForm, form, addExpense, updateExpense, deleteExpense, sendNudge, nudgePhone }) {
+function SplitTab({ expenses, settlements, showForm, setShowForm, form, addExpense, updateExpense, deleteExpense, sendNudge, nudgePhone, exportGroupLedger, exportBusy }) {
   const oneOffExpenses = expenses.filter((e) => !e.recurring);
+  const [showExport, setShowExport] = useState(false);
 
   const [editingId, setEditingId] = useState(null);
   const [eDesc, setEDesc] = useState("");
@@ -1645,7 +1696,34 @@ function SplitTab({ expenses, settlements, showForm, setShowForm, form, addExpen
     <div>
       <h2 style={{ fontSize: 20, fontWeight: 800, margin: "2px 0 16px", letterSpacing: -0.4 }}>Split & Track</h2>
 
-      <SectionTitle>Settle up</SectionTitle>
+      <SectionTitle action={
+        oneOffExpenses.length > 0 && (
+          <button onClick={() => setShowExport((v) => !v)} style={navAddBtn(showExport)}>
+            {showExport ? <X size={13} /> : <Share2 size={13} />} {showExport ? "Close" : "Share"}
+          </button>
+        )
+      }>
+        Settle up
+      </SectionTitle>
+
+      {showExport && (
+        <div style={{ ...glassCard, padding: 14, marginBottom: 14, display: "flex", flexDirection: "column", gap: 10 }}>
+          <div style={{ fontSize: 11.5, color: T.textSoft, lineHeight: 1.5 }}>
+            Send the group a copy of the ledger and who owes what — for reference, or to ask for payment.
+            Opens your phone's share sheet, so you can pick WhatsApp, Email, Drive, or anything else you have.
+            The message itself lists the outstanding amounts, with the full ledger attached.
+          </div>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button disabled={exportBusy} onClick={() => exportGroupLedger("xlsx")} style={{ ...primaryBtn, marginTop: 0, flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 6, opacity: exportBusy ? 0.6 : 1 }}>
+              <FileSpreadsheet size={13} /> Excel
+            </button>
+            <button disabled={exportBusy} onClick={() => exportGroupLedger("pdf")} style={{ ...primaryBtn, marginTop: 0, flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 6, opacity: exportBusy ? 0.6 : 1 }}>
+              <FileText size={13} /> PDF
+            </button>
+          </div>
+          {exportBusy && <div style={{ fontSize: 11, color: T.textMute, textAlign: "center" }}>Preparing your file…</div>}
+        </div>
+      )}
       {settlements.length === 0 ? (
         <div style={{ ...glassCard, color: T.green, padding: "13px 15px", fontSize: 13, fontWeight: 600, background: "rgba(52,211,153,0.08)", borderColor: "rgba(52,211,153,0.25)", marginBottom: 22 }}>
           Everyone's square. No one owes anyone right now.

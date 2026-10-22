@@ -80,16 +80,33 @@ jobs:
       - name: Sync Capacitor
         run: npx cap sync android
 
-      - name: Create a signing key
-        # Self-signed, generated fresh on each build — fine for sideloading.
-        # Note: because it's regenerated every run, installing a new build
-        # over an old one may require uninstalling the previous one first
-        # (Android requires matching signatures to "update" an app in place).
+      - name: Set up the signing key
+        # If KEYSTORE_BASE64 and KEYSTORE_PASSWORD are configured as repo
+        # secrets (see EASY_INSTALL.md -> "Enable in-place updates"), every
+        # build reuses that same key, so Android treats a new build as an
+        # update to the old one instead of a different app — installing over
+        # an existing copy works and keeps all your local data.
+        #
+        # Without those secrets a fresh key is generated every run instead.
+        # The build still works, but each install has a different signature,
+        # so updating means uninstalling the previous copy first (which erases
+        # its local data, since there is no backend).
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
         run: |
-          keytool -genkeypair -v -keystore release.keystore -alias trucent \
-            -keyalg RSA -keysize 2048 -validity 10000 \
-            -storepass trucent123 -keypass trucent123 \
-            -dname "CN=TruCent, OU=Personal, O=TruCent, L=City, S=State, C=IN"
+          if [ -n "$KEYSTORE_BASE64" ] && [ -n "$KEYSTORE_PASSWORD" ]; then
+            echo "Using the persistent signing key from repo secrets."
+            echo "$KEYSTORE_BASE64" | base64 -d > release.keystore
+            echo "SIGN_STORE_PASSWORD=$KEYSTORE_PASSWORD" >> "$GITHUB_ENV"
+          else
+            echo "No signing secrets set — generating a one-off key for this build only."
+            keytool -genkeypair -v -keystore release.keystore -alias trucent \
+              -keyalg RSA -keysize 2048 -validity 10000 \
+              -storepass trucent123 -keypass trucent123 \
+              -dname "CN=TruCent, OU=Personal, O=TruCent, L=City, S=State, C=IN"
+            echo "SIGN_STORE_PASSWORD=trucent123" >> "$GITHUB_ENV"
+          fi
 
       - name: Build the signed release APK
         working-directory: android
@@ -97,9 +114,9 @@ jobs:
           chmod +x gradlew
           ./gradlew assembleRelease \
             -Pandroid.injected.signing.store.file=$(pwd)/../release.keystore \
-            -Pandroid.injected.signing.store.password=trucent123 \
+            -Pandroid.injected.signing.store.password="$SIGN_STORE_PASSWORD" \
             -Pandroid.injected.signing.key.alias=trucent \
-            -Pandroid.injected.signing.key.password=trucent123
+            -Pandroid.injected.signing.key.password="$SIGN_STORE_PASSWORD"
 
       - name: Find and rename the APK
         run: |

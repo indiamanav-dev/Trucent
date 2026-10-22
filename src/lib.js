@@ -902,3 +902,87 @@ export function bytesToBase64(bytes) {
   for (let i = 0; i < bytes.length; i += chunk) s += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
   return btoa(s);
 }
+
+// ----------------------------------------------------------------------------
+// Group ledger export (Split tab) — a statement of shared one-off expenses
+// plus the settle-up position, meant to be shared with the group: "here's
+// what we spent, here's who owes what." Recurring bills are deliberately
+// excluded, matching the app's own split — they're fixed costs, not shared
+// debts (see the note in the Split tab itself).
+// ----------------------------------------------------------------------------
+export function buildGroupLedgerModel({ expenses, settlements, members, nameOf, today = todayISO() }) {
+  const oneOff = (expenses || []).filter((e) => !e.recurring).sort((a, b) => a.date.localeCompare(b.date));
+
+  const perMember = new Map();
+  (members || []).forEach((m) => perMember.set(m.id, { id: m.id, name: nameOf(m.id), paid: 0, share: 0 }));
+  const ensure = (id) => {
+    if (!perMember.has(id)) perMember.set(id, { id, name: nameOf(id), paid: 0, share: 0 });
+    return perMember.get(id);
+  };
+  oneOff.forEach((e) => {
+    ensure(e.paidBy).paid += e.amount;
+    const n = e.splitAmong && e.splitAmong.length ? e.splitAmong.length : 0;
+    const per = n ? e.amount / n : 0;
+    (e.splitAmong || []).forEach((id) => { ensure(id).share += per; });
+  });
+  const summary = [...perMember.values()]
+    .map((m) => ({ ...m, net: m.paid - m.share }))
+    .filter((m) => m.paid > 0.004 || m.share > 0.004)
+    .sort((a, b) => b.net - a.net);
+
+  const totalSpend = oneOff.reduce((s, e) => s + e.amount, 0);
+
+  const ledgerRows = oneOff.map((e) => [
+    e.date, e.desc, e.category, nameOf(e.paidBy),
+    (e.splitAmong || []).map(nameOf).join(", "), e.amount,
+    e.splitAmong && e.splitAmong.length ? Math.round((e.amount / e.splitAmong.length) * 100) / 100 : e.amount,
+  ]);
+  const settleRows = (settlements || []).map((s) => [nameOf(s.from), nameOf(s.to), Math.round(s.amount * 100) / 100]);
+  const summaryRows = summary.map((m) => [m.name, Math.round(m.paid * 100) / 100, Math.round(m.share * 100) / 100, Math.round(m.net * 100) / 100]);
+
+  return { oneOff, totalSpend, settlements: settlements || [], summary, ledgerRows, settleRows, summaryRows, today, count: oneOff.length };
+}
+
+export function buildGroupLedgerXlsx(model) {
+  return buildXlsx([
+    { name: "Settle up", widths: [20, 20, 16],
+      rows: [["Owes", "Owed to", "Amount (₹)"], ...model.settleRows] },
+    { name: "Per-member summary", widths: [20, 16, 16, 16],
+      rows: [["Member", "Paid (₹)", "Share (₹)", "Net (₹)"], ...model.summaryRows] },
+    { name: "Ledger", widths: [12, 30, 20, 16, 30, 14, 14],
+      rows: [["Date", "Description", "Category", "Paid by", "Split among", "Amount (₹)", "Per person (₹)"], ...model.ledgerRows] },
+  ]);
+}
+
+export function buildGroupLedgerPdf(model, ownerLabel = "") {
+  const blocks = [{ t: "h", text: "Settle up" }];
+  if (model.settleRows.length === 0) {
+    blocks.push({ t: "p", text: "Everyone's square -- no one owes anyone right now." });
+  } else {
+    blocks.push({
+      t: "table", cols: [{ label: "Owes", w: 18 }, { label: "Owed to", w: 18 }, { label: "Amount", w: 14, right: true }],
+      rows: model.settleRows.map((r) => [r[0], r[1], "Rs. " + Math.round(r[2]).toLocaleString("en-IN")]),
+    });
+  }
+
+  blocks.push({ t: "h", text: "Per-member summary" });
+  blocks.push({
+    t: "table",
+    cols: [{ label: "Member", w: 18 }, { label: "Paid", w: 14, right: true }, { label: "Share", w: 14, right: true }, { label: "Net", w: 14, right: true }],
+    rows: model.summary.map((m) => [
+      m.name,
+      "Rs. " + Math.round(m.paid).toLocaleString("en-IN"),
+      "Rs. " + Math.round(m.share).toLocaleString("en-IN"),
+      (m.net >= 0 ? "+" : "-") + "Rs. " + Math.round(Math.abs(m.net)).toLocaleString("en-IN"),
+    ]),
+  });
+
+  blocks.push({ t: "h", text: `Ledger (${model.ledgerRows.length} expenses, Rs. ${Math.round(model.totalSpend).toLocaleString("en-IN")} total)` });
+  blocks.push({
+    t: "table",
+    cols: [{ label: "Date", w: 10 }, { label: "Description", w: 30 }, { label: "Paid by", w: 12 }, { label: "Split among", w: 22 }, { label: "Amount", w: 12, right: true }],
+    rows: model.ledgerRows.map((r) => [r[0], r[1], r[3], r[4], "Rs. " + Math.round(r[5]).toLocaleString("en-IN")]),
+  });
+
+  return buildPdf({ title: "TruCent group ledger", subtitle: ownerLabel || undefined, blocks });
+}

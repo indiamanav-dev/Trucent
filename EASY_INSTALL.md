@@ -75,12 +75,48 @@ click the button it gives you.)*
 ## If you ever want to update the app later
 
 Repeat Step 2 (copy the new files in, commit, push in GitHub Desktop) —
-the build and Release happen automatically again. Note: because each build
-uses a freshly generated signing key (see the workflow file's comments),
-installing an update may ask you to uninstall the old version first. If
-you'd rather have proper in-place updates, that needs one extra one-time
-setup (a persistent signing key stored as a "GitHub Secret") — ask me and
-I'll walk you through it if you get to that point.
+the build and Release happen automatically again.
+
+**Do the "Enable in-place updates" section below first** (one-time, ~3
+minutes). Without it, Android treats every build as a different app (each
+one gets a different signing key), so installing a new version means
+uninstalling the old one first — which **erases all your local data**, because
+the app stores everything on the phone, not on a server. With it set up, a new
+build installs as a normal update and keeps your data.
+
+## Enable in-place updates (do this once, before your first real update)
+
+A signing key is how Android decides "is this an update to the same app, or a
+different app pretending to have the same name?" This gives the project a
+permanent key, stored as encrypted secrets in your own GitHub repo, so every
+future build signs the same way.
+
+1. You received a separate file called **`trucent-signing-secrets-PRIVATE.txt`**
+   alongside the project zip. It is deliberately *not* inside the project
+   folder: your repo is public, so anything inside the folder you push would be
+   visible to the whole internet, and anyone could then sign a fake "update" to
+   your app. **Never copy that file into the project folder.**
+2. On your repo's GitHub page: **Settings** tab -> **Secrets and variables**
+   -> **Actions** -> **New repository secret**.
+3. Create a secret named exactly `KEYSTORE_PASSWORD`. For the value, copy the
+   password line from the private file.
+4. Create a second secret named exactly `KEYSTORE_BASE64`. For the value, copy
+   the long single line from the private file (~3,640 characters — that is
+   expected). Copy it from the file itself, not from a chat window: a string
+   this long reliably gets a character corrupted when it passes through
+   chat/markdown, which would silently produce a broken key.
+5. That's it — no code changes. The next build picks the secrets up
+   automatically, and the build log says **"Using the persistent signing key
+   from repo secrets"** when it's working. (If you only set one of the two
+   secrets, it safely falls back to a one-off key and says so in the log.)
+
+**If you already installed a build made before this**, that copy was signed
+with a one-off key, so the first update after adding the secrets still needs one
+last uninstall. Every build *after* that updates cleanly in place.
+
+Keep the private file somewhere safe outside GitHub too (a password manager is
+ideal). If you ever lose it you can't sign future updates with the same key —
+you'd be back to uninstall-to-update.
 
 ## Not sharing this repo publicly
 

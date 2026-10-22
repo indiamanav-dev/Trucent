@@ -4,6 +4,7 @@ import {
   computeWrapped, planNotifications, buildNudgeText, waLink, normalizePhone, firstName,
   buildWidgetPayload, buildExportModel, buildExportXlsx, buildExportPdf, addDaysISO,
   savingsStreakMonths, monthKey, hashToInt,
+  buildGroupLedgerModel, buildGroupLedgerXlsx, buildGroupLedgerPdf,
 } from "../src/lib.js";
 
 let pass = 0, fail = 0;
@@ -188,6 +189,56 @@ t("pdf text is escaped and non-ASCII (rupee) mapped, not raw bytes", () => {
   const bytes = buildExportPdf(model, "Parth (Me)");
   const txt = Buffer.from(bytes).toString("latin1");
   assert.ok(!txt.includes("₹"));
+});
+
+console.log("\nGroup ledger export (Split tab)");
+const members2 = [{ id: "you", name: "You" }, { id: "dad", name: "Dad" }, { id: "sis", name: "Sis" }];
+const nameOf2 = (id) => members2.find((m) => m.id === id)?.name || id;
+
+t("per-member paid/share/net computed correctly; recurring bills excluded", () => {
+  const expenses = [
+    { id: "e1", desc: "Groceries", category: "Groceries", amount: 900, date: "2026-09-01", paidBy: "you", splitAmong: ["you", "dad", "sis"], recurring: false },
+    { id: "e2", desc: "Rent", category: "Utilities", amount: 18000, date: "2026-09-05", paidBy: "dad", splitAmong: ["you", "dad"], recurring: true },
+    { id: "e3", desc: "Dinner", category: "Dining Out", amount: 600, date: "2026-09-06", paidBy: "sis", splitAmong: ["you", "sis"], recurring: false },
+  ];
+  const model = buildGroupLedgerModel({ expenses, settlements: [], members: members2, nameOf: nameOf2, today: "2026-09-12" });
+  assert.equal(model.count, 2); assert.equal(model.totalSpend, 1500);
+  const you = model.summary.find((m) => m.id === "you");
+  assert.equal(you.paid, 900); assert.equal(you.share, 600); assert.equal(you.net, 300);
+  const sis = model.summary.find((m) => m.id === "sis");
+  assert.equal(sis.paid, 600); assert.equal(sis.share, 600); assert.equal(sis.net, 0);
+  // nets across the group must always cancel out
+  assert.ok(Math.abs(model.summary.reduce((a, m) => a + m.net, 0)) < 0.01);
+});
+t("members with no activity are left out of the summary", () => {
+  const expenses = [{ id: "e1", desc: "Coffee", category: "Dining Out", amount: 200, date: "2026-09-01", paidBy: "you", splitAmong: ["you"], recurring: false }];
+  const model = buildGroupLedgerModel({ expenses, settlements: [], members: members2, nameOf: nameOf2, today: "2026-09-12" });
+  assert.equal(model.summary.length, 1); assert.equal(model.summary[0].id, "you");
+});
+t("a member who was deleted (orphaned id) is still counted, so balances still cancel", () => {
+  const expenses = [{ id: "e1", desc: "Trip", category: "Transport", amount: 1000, date: "2026-09-01", paidBy: "ghost", splitAmong: ["you", "ghost"], recurring: false }];
+  const model = buildGroupLedgerModel({ expenses, settlements: [], members: members2, nameOf: nameOf2, today: "2026-09-12" });
+  assert.equal(model.summary.length, 2);
+  assert.ok(Math.abs(model.summary.reduce((a, m) => a + m.net, 0)) < 0.01);
+});
+t("settlements pass through with names resolved", () => {
+  const model = buildGroupLedgerModel({ expenses: [], settlements: [{ from: "dad", to: "you", amount: 450.5 }], members: members2, nameOf: nameOf2, today: "2026-09-12" });
+  assert.deepEqual(model.settleRows[0], ["Dad", "You", 450.5]);
+});
+t("xlsx: real zip containing the three sheets", () => {
+  const model = buildGroupLedgerModel({
+    expenses: [{ id: "e1", desc: "Trip", category: "Transport", amount: 1000, date: "2026-09-01", paidBy: "you", splitAmong: ["you", "dad"], recurring: false }],
+    settlements: [{ from: "dad", to: "you", amount: 500 }], members: members2, nameOf: nameOf2, today: "2026-09-12",
+  });
+  const bytes = buildGroupLedgerXlsx(model);
+  assert.equal(String.fromCharCode(bytes[0], bytes[1]), "PK");
+  const txt = Buffer.from(bytes).toString("latin1");
+  assert.ok(txt.includes("Settle up")); assert.ok(txt.includes("Per-member summary")); assert.ok(txt.includes("Ledger"));
+});
+t("pdf: valid structure, and the all-settled case prints a message instead of an empty table", () => {
+  const model = buildGroupLedgerModel({ expenses: [], settlements: [], members: members2, nameOf: nameOf2, today: "2026-09-12" });
+  const txt = Buffer.from(buildGroupLedgerPdf(model, "You")).toString("latin1");
+  assert.ok(txt.startsWith("%PDF-1.4")); assert.ok(txt.includes("square")); assert.ok(txt.trim().endsWith("%%EOF"));
 });
 
 console.log(`\n${pass} passed, ${fail} failed`);

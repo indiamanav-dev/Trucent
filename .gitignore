@@ -3,3 +3,9 @@ dist
 .DS_Store
 .env
 .env.local
+
+# Signing secrets must never be committed (the repo is public)
+trucent-signing-secrets-PRIVATE.txt
+*keystore*
+*.jks
+*.p12
