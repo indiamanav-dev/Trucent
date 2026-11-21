@@ -4,6 +4,19 @@ Household expense splitting + "where did my salary go" tracker, built with React
 **This build ships with zero dummy data** — every list starts empty, and the only
 seed profile is "You." Add household members from the profile switcher (top-right avatar).
 
+## New in this version
+
+- **One Recurring list** (Track tab): add, edit and delete bills, with a due-day picker. The "repeats every month" box on offline expenses and Money Coach's **Make this recurring** both create real bills. A bill the app sees in your SMS two months running (or any EMI / auto-debit notice) is added automatically, tagged *Added from SMS* — edit or delete it any time; a deleted one stays deleted.
+- **Bills count as Spent when they're paid** — via **Mark paid** or the matching bank-debit SMS. Unpaid ones show as *Still to pay* in the header. A bank debit that matches something you already marked is counted once (the SMS entry is kept).
+- **Saved is separate from Spent.** The new **Savings** category (SIPs, mutual funds, FD/RD/PPF/NPS, brokers) is never part of Spent: Earned = Spent + Saved + Left over.
+- **Header and dashboard are for this month only.** (They used to add up everything imported from SMS — up to 180 days — under a "this month" label.)
+- **Learns from your corrections.** Re-categorise a transaction and the app remembers that merchant (UPI-handle digits are ignored so a changing handle still matches). It offers to fix older matching entries, asks "always or just this once?" for people, has a **Needs a category** inbox, and a **Learned categories** screen (profile menu) to change or forget rules. Learning also covers money received.
+- **Back up / Restore** (profile menu → Your data): one file with everything, including learned rules and the list of SMS you deleted. Restoring replaces what's on the phone, after confirmation.
+- **All transactions roll up by month** (newest first, current month open), each with a trash icon; **every delete asks first**. Income entries can be re-filed; money-out can never be tagged Income.
+- **Upcoming → Spent** records a personal Track transaction (never a Split entry), and Upcoming rows are editable.
+- **Category set changed:** Bills/Utilities (now includes all insurance), Travel/Fuel, Health/Meds, Tuition/Education, Credit Card/EMI, plus Savings. Saved data is migrated automatically, including old backups.
+- **Tests:** `npm test` runs 121 plain-Node tests (SMS parsing, categories, rules, bill matching, totals, migration, backup). The CI build runs them first and stops if any fail.
+
 ## What's in this build
 
 - **Local persistence** — data survives closing/reopening the app (not uninstall/reinstall; see the backup discussion in chat for that).

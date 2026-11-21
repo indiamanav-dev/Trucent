@@ -23,6 +23,11 @@ jobs:
         with:
           node-version: '20'
 
+      - name: Run the logic tests (the build stops here if any fail)
+        # SMS parsing, categories, bill matching, totals, backup format and migration
+        # are all covered by plain-Node tests, so a regression is caught before an APK is built.
+        run: npm test
+
       - name: Set up Java (needed for Android's build tool, Gradle)
         uses: actions/setup-java@v4
         with:

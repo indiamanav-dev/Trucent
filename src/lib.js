@@ -96,20 +96,34 @@ export function computeNextBill(recurringItems, planned, today = todayISO()) {
 export function guessCategory(desc = "") {
   const d = String(desc).toLowerCase();
   if (/salary|payroll/.test(d)) return "Income";
-  if (/credit card|cc bill|\bemi\b|loan|cred\.club|\bcred\b/.test(d)) return "Credit Card / EMI";
-  if (/insurance|\blic\b|premium|policy|acko|star health|max life/.test(d)) return "Insurance";
+  // Savings = money you put away, not money you spent (counted separately from Spent).
+  if (/\bsip\b|mutual fund|zerodha|groww|kuvera|paytm money|\bnps\b|\bppf\b|\bfd\b|fixed deposit|recurring deposit|rd installment|rd a\/c|digital gold|sovereign gold|gold bond|gold etf|smallcase|et money|upstox|angel one|5paisa|iccl|indian clearing|nse clearing/.test(d)) return "Savings";
+  if (/credit card|cc bill|\bemi\b|loan|cred\.club|\bcred\b/.test(d)) return "Credit Card/EMI";
+  // Insurance of every kind lives under Bills/Utilities.
+  if (/insurance|\blic\b|premium|policy|acko|star health|max life/.test(d)) return "Bills/Utilities";
   if (/swiggy|zomato|eatsure|restaurant|cafe|coffee|dominos|domino's|pizza|burger|kfc|mcdonald|starbucks|biryani|bakery|dhaba|dine|food/.test(d)) return "Dining Out";
   if (/netflix|spotify|prime video|hotstar|jiocinema|sonyliv|zee5|youtube|movie|cinema|pvr|inox|bookmyshow|gaming|steam/.test(d)) return "Entertainment";
-  if (/uber|\bola\b|rapido|petrol|diesel|fuel|hpcl|bpcl|iocl|indian oil|shell|metro|irctc|redbus|fastag|toll|cab\b|parking|makemytrip|indigo|air india/.test(d)) return "Transport";
+  if (/uber|\bola\b|rapido|petrol|diesel|fuel|hpcl|bpcl|iocl|indian oil|shell|metro|irctc|redbus|fastag|toll|cab\b|parking|makemytrip|indigo|air india/.test(d)) return "Travel/Fuel";
   if (/amazon|flipkart|myntra|ajio|meesho|nykaa|mall|decathlon|croma|lifestyle|zara|shopper|reliance digital/.test(d)) return "Shopping";
   if (/bigbasket|dmart|d-mart|grocery|kirana|supermarket|blinkit|zepto|instamart|more retail|reliance fresh|milk|vegetable|fruits|sabzi/.test(d)) return "Groceries";
-  if (/pharmacy|apollo|medplus|pharmeasy|1mg|hospital|clinic|doctor|diagnostic|lab\b|dental|health/.test(d)) return "Health";
-  if (/electricity|bescom|msedcl|tneb|tata power|adani|water bill|gas bill|piped gas|broadband|wifi|fiber|dth|tata play|recharge|postpaid|prepaid|airtel|\bjio\b|vodafone|\bvi\b|bsnl/.test(d)) return "Utilities";
-  if (/school|tuition|fees|college|academy|coaching|byju|unacademy/.test(d)) return "Tuition / Education";
+  if (/pharmacy|apollo|medplus|pharmeasy|1mg|hospital|clinic|doctor|diagnostic|lab\b|dental|health/.test(d)) return "Health/Meds";
+  if (/electricity|bescom|msedcl|tneb|tata power|adani|water bill|gas bill|piped gas|broadband|wifi|fiber|dth|tata play|recharge|postpaid|prepaid|airtel|\bjio\b|vodafone|\bvi\b|bsnl/.test(d)) return "Bills/Utilities";
+  if (/school|tuition|fees|college|academy|coaching|byju|unacademy/.test(d)) return "Tuition/Education";
   if (/maid|cook|domestic help|servant/.test(d)) return "Domestic Help";
   if (/society|maintenance|rwa/.test(d)) return "Society Maintenance";
   return "Others";
 }
+
+// Old name -> new name. Used to migrate saved data and old backups.
+export const CATEGORY_RENAMES = {
+  "Insurance": "Bills/Utilities",
+  "Utilities": "Bills/Utilities",
+  "Transport": "Travel/Fuel",
+  "Health": "Health/Meds",
+  "Tuition / Education": "Tuition/Education",
+  "Credit Card / EMI": "Credit Card/EMI",
+};
+export function renameCategory(c) { return CATEGORY_RENAMES[c] || c; }
 
 // ----------------------------------------------------------------------------
 // Persistence-adjacent helpers
@@ -183,10 +197,12 @@ function extractMerchant(body, dir, isRefund, sender) {
     tries.push(new RegExp(String.raw`\btowards\s+([A-Za-z][A-Za-z0-9 .&'@_-]{1,32}?)` + STOP, "i"));
   }
   for (const re of tries) {
-    const got = prettyMerchant(capture(re, t));
-    if (got && got.length >= 2) return got;
+    const raw = capture(re, t);
+    const got = prettyMerchant(raw);
+    if (got && got.length >= 2) return { pretty: got, raw };
   }
-  return senderName(sender);
+  const sn = senderName(sender);
+  return { pretty: sn, raw: sn };
 }
 
 function pickAmount(body, skipKeywords = /(?:bal|balance|limit|lmt|available|avl|outstanding|min|minimum)\W*$/i) {
@@ -265,19 +281,19 @@ const BILL_AMOUNT_RES = [
 ];
 
 function billTypeOf(lower) {
-  if (/credit\s*card|\bcc\b|card ending|card no/.test(lower)) return { label: "credit card bill", category: "Credit Card / EMI" };
-  if (/\bemi\b|loan/.test(lower)) return { label: "loan EMI", category: "Credit Card / EMI" };
-  if (/insurance|premium|policy|\blic\b/.test(lower)) return { label: "insurance premium", category: "Insurance" };
-  if (/electricity|bescom|msedcl|discom|tneb|power|energy/.test(lower)) return { label: "electricity bill", category: "Utilities" };
-  if (/water/.test(lower)) return { label: "water bill", category: "Utilities" };
-  if (/\bgas\b|piped/.test(lower)) return { label: "gas bill", category: "Utilities" };
-  if (/broadband|fiber|fibre|wifi/.test(lower)) return { label: "broadband bill", category: "Utilities" };
-  if (/postpaid|mobile|recharge/.test(lower)) return { label: "mobile bill", category: "Utilities" };
-  return { label: "bill", category: "Utilities" };
+  if (/credit\s*card|\bcc\b|card ending|card no/.test(lower)) return { label: "credit card bill", category: "Credit Card/EMI" };
+  if (/\bemi\b|loan/.test(lower)) return { label: "loan EMI", category: "Credit Card/EMI" };
+  if (/insurance|premium|policy|\blic\b/.test(lower)) return { label: "insurance premium", category: "Bills/Utilities" };
+  if (/electricity|bescom|msedcl|discom|tneb|power|energy/.test(lower)) return { label: "electricity bill", category: "Bills/Utilities" };
+  if (/water/.test(lower)) return { label: "water bill", category: "Bills/Utilities" };
+  if (/\bgas\b|piped/.test(lower)) return { label: "gas bill", category: "Bills/Utilities" };
+  if (/broadband|fiber|fibre|wifi/.test(lower)) return { label: "broadband bill", category: "Bills/Utilities" };
+  if (/postpaid|mobile|recharge/.test(lower)) return { label: "mobile bill", category: "Bills/Utilities" };
+  return { label: "bill", category: "Bills/Utilities" };
 }
 const KNOWN_BILLERS = /\b(hdfc|icici|sbi|axis|kotak|yes bank|idfc|indusind|rbl|amex|american express|bescom|airtel|jio|vodafone|bsnl|tata power|adani|lic|max life|bajaj|star health|acko|digit|tata play)\b/i;
 
-function parseBill(body, sender, ts, today) {
+function parseBill(body, sender, ts, today, futureDebit = false) {
   const lower = body.toLowerCase();
   const dueDate = findDueDate(body, today);
   if (!dueDate) return null;
@@ -286,7 +302,11 @@ function parseBill(body, sender, ts, today) {
   if (!amount) amount = pickAmount(body);
   if (!amount) return null;
   const age = daysBetweenISO(today, dueDate);
-  if (age < -7 || age > 120) return null;
+  if (age < -200 || age > 120) return null;
+  // A bill whose due date has already passed is kept (flagged stale) rather than
+  // dropped: it can't become an Upcoming item, but it is evidence of a monthly
+  // pattern ("last month's statement + this month's statement").
+  const stale = age < -7;
   const type = billTypeOf(lower);
   const known = KNOWN_BILLERS.exec(body);
   const biller = known ? (known[1].length <= 4 ? known[1].toUpperCase() : titleCase(known[1])) : senderName(sender);
@@ -296,6 +316,8 @@ function parseBill(body, sender, ts, today) {
     kind: "bill",
     bill: {
       desc, category: type.category, amount, dueDate, billKey: key,
+      billerKey: `${biller.toLowerCase()}|${type.label}`, billLabel: type.label,
+      autoDebit: !!futureDebit, stale,
       smsKey: `${ts}|${sender}|${hashString(body)}`, sender, body, ts,
     },
   };
@@ -318,7 +340,7 @@ export function parseSmsMessage(m, today = todayISO()) {
   // 1) Bills / upcoming auto-debits
   const futureDebit = FUTURE_DEBIT_RE.test(body);
   if ((BILL_HINT.test(body) || futureDebit) && !PAID_CONF.test(body)) {
-    const bill = parseBill(body, sender, ts, today);
+    const bill = parseBill(body, sender, ts, today, futureDebit);
     if (bill) return bill;
     if (futureDebit) return null; // a *future* debit is not a transaction that happened
   }
@@ -340,7 +362,9 @@ export function parseSmsMessage(m, today = todayISO()) {
 
   const date = localISO(new Date(ts));
   const smsKey = `${ts}|${sender}|${hashString(body)}`;
-  let desc = extractMerchant(body, dir, isRefund, sender);
+  const mer = extractMerchant(body, dir, isRefund, sender);
+  let desc = mer.pretty;
+  const extractedDesc = desc;
   let category, signed, type;
 
   if (isRefund) {
@@ -358,16 +382,19 @@ export function parseSmsMessage(m, today = todayISO()) {
     category = guessCategory(desc);
     if (category === "Others") category = guessCategory(body.replace(/debited|credited/gi, ""));
   }
+  // Key used to remember user corrections: stable across display-name changes
+  // (for UPI handles the digits are stripped, so "shop123@ybl" == "shop456@ybl").
+  const mkey = desc === extractedDesc ? merchantKey(mer.raw) : merchantKey(desc);
 
   const tx = {
     id: `sms_${ts}_${hashString(body)}`,
     desc, amount: signed, category, date, type,
-    source: `SMS · ${senderName(sender)}`, sender, body, smsKey,
+    source: `SMS · ${senderName(sender)}`, sender, body, smsKey, ts, mkey,
   };
   // Paying a credit-card bill from the bank account is a transfer — the card
   // purchases themselves are already counted, so don't double-count by default.
   if (type === "debit" && /credit\s*card|cc\s*bill|card\s*(?:bill|payment)|\bcred\b/i.test(body + " " + desc)) {
-    tx.category = "Credit Card / EMI";
+    tx.category = "Credit Card/EMI";
     tx.excluded = true;
     tx.excludedReason = "Credit-card bill payment — card purchases are already counted";
   }
@@ -376,9 +403,10 @@ export function parseSmsMessage(m, today = todayISO()) {
 
 // Turn a batch of raw messages into new transactions + bills, skipping anything
 // already imported (or deliberately deleted by the user).
-export function ingestMessages(messages, { txKeys = new Set(), billKeys = new Set(), ignored = new Set(), today = todayISO() } = {}) {
+export function ingestMessages(messages, { txKeys = new Set(), billKeys = new Set(), ignored = new Set(), today = todayISO(), rules = [] } = {}) {
   const txs = [];
   const bills = [];
+  const staleBills = [];
   let skipped = 0;
   const seenBill = new Set(billKeys);
   const seenTx = new Set(txKeys);
@@ -388,14 +416,16 @@ export function ingestMessages(messages, { txKeys = new Set(), billKeys = new Se
     if (parsed.kind === "txn") {
       const k = parsed.tx.smsKey;
       if (ignored.has(k) || seenTx.has(k)) { skipped++; continue; }
-      seenTx.add(k); txs.push(parsed.tx);
+      seenTx.add(k);
+      txs.push(applyRules(parsed.tx, rules));
     } else {
       const b = parsed.bill;
       if (ignored.has(b.smsKey) || ignored.has(b.billKey) || seenBill.has(b.billKey)) { skipped++; continue; }
-      seenBill.add(b.billKey); bills.push(b);
+      seenBill.add(b.billKey);
+      (b.stale ? staleBills : bills).push(b);
     }
   }
-  return { txs, bills, skipped };
+  return { txs, bills, staleBills, skipped };
 }
 
 // ----------------------------------------------------------------------------
@@ -429,7 +459,7 @@ export function normMerchant(desc = "") {
 }
 function similarAmount(a, b) { return Math.abs(a - b) <= Math.max(a, b) * 0.05 || Math.abs(a - b) <= 10; }
 
-export function detectRecurringCharges(txList, today = todayISO()) {
+export function detectRecurringCharges(txList, today = todayISO(), trackedKeys = new Set()) {
   const groups = new Map();
   for (const t of txList || []) {
     if (!(t.amount > 0) || t.category === "Income" || t.excluded) continue;
@@ -440,7 +470,7 @@ export function detectRecurringCharges(txList, today = todayISO()) {
   }
   const out = [];
   for (const [key, arr] of groups) {
-    if (arr.some((t) => t.recurring)) continue;                 // already tracked as recurring
+    if (arr.some((t) => t.recurring || t.recurringId) || trackedKeys.has(key)) continue;   // already tracked as recurring
     const sorted = [...arr].sort((a, b) => a.date.localeCompare(b.date));
     // collapse same-day duplicates
     const days = [];
@@ -481,14 +511,17 @@ export function periodRange(kind, today = todayISO()) {
   return { start: "0000-01-01", end: "9999-12-31", key: "all", label: "All time" };
 }
 
-export function summarizePeriod(txList, recurringItems, range, { includeRecurring = false } = {}) {
+export function summarizePeriod(txList, recurringItems, range) {
+  // recurringItems is accepted for backwards compatibility but unused: recurring
+  // bills now count as spending only when actually paid, i.e. as transactions.
   const inRange = (txList || []).filter((t) => t.date >= range.start && t.date <= range.end && !t.excluded);
-  let income = 0, refunds = 0, spend = 0, count = 0;
+  let income = 0, refunds = 0, spend = 0, saved = 0, count = 0;
   const cat = new Map();
   const merch = new Map();
   let biggest = null;
   for (const t of inRange) {
     if (t.category === "Income") { income += Math.abs(t.amount); continue; }
+    if (t.category === "Savings") { saved += t.amount; continue; }
     spend += t.amount;
     cat.set(t.category, (cat.get(t.category) || 0) + t.amount);
     if (t.amount < 0) refunds += Math.abs(t.amount);
@@ -500,18 +533,12 @@ export function summarizePeriod(txList, recurringItems, range, { includeRecurrin
       if (!biggest || t.amount > biggest.amount) biggest = t;
     }
   }
-  if (includeRecurring) {
-    for (const e of recurringItems || []) {
-      spend += e.amount;
-      cat.set(e.category, (cat.get(e.category) || 0) + e.amount);
-    }
-  }
   spend = Math.max(0, spend);
   const categories = [...cat.entries()].map(([category, amount]) => ({ category, amount })).filter((c) => c.amount > 0).sort((a, b) => b.amount - a.amount);
   const topMerchant = [...merch.values()].sort((a, b) => b.total - a.total)[0] || null;
-  const net = income - spend;
+  const net = income - spend;                    // not spent (includes what went to savings)
   return {
-    range, income, spend, refunds, net, count, categories, topMerchant, biggest,
+    range, income, spend, saved, refunds, net, leftOver: net - saved, count, categories, topMerchant, biggest,
     topCategory: categories[0] ? { ...categories[0], pct: spend ? (categories[0].amount / spend) * 100 : 0 } : null,
     savingsRate: income > 0 ? Math.max(0, (net / income) * 100) : null,
   };
@@ -530,8 +557,7 @@ export function savingsStreakMonths(txList, endKey, today = todayISO(), maxLookb
 
 export function computeWrapped({ txList, recurringItems, goals, activityDates, kind = "month", today = todayISO() }) {
   const range = periodRange(kind, today);
-  const includeRecurring = kind === "month";
-  const cur = summarizePeriod(txList, recurringItems, range, { includeRecurring });
+  const cur = summarizePeriod(txList, recurringItems, range);
   const streak = computeStreakInfo(activityDates, today);
   const endKey = kind === "year" ? monthKey(today) : range.key;
   const savingsStreak = savingsStreakMonths(txList, kind === "month" || kind === "year" ? monthKey(today) : endKey, today);
@@ -659,7 +685,7 @@ export function buildWidgetPayload({ income, totalSpend, saved, nextBill, streak
   const { m } = isoParts(today);
   const hasData = income > 0 || totalSpend > 0;
   return {
-    label: `NET · ${MONTH_NAMES[m - 1].toUpperCase()}`,
+    label: `LEFT OVER · ${MONTH_NAMES[m - 1].toUpperCase()}`,   // `saved` argument = Earned - Spent - Saved
     net: hasData ? `${saved >= 0 ? "+" : "-"}${inr(saved)}` : "—",
     netPositive: saved >= 0,
     earned: inr(income), spent: inr(totalSpend),
@@ -675,12 +701,11 @@ export function buildWidgetPayload({ income, totalSpend, saved, nextBill, streak
 // Export: Excel (.xlsx) and PDF, both hand-built so they need no dependencies
 // ----------------------------------------------------------------------------
 export function buildExportModel({ txList, expenses, recurringItems, nameOf, range, today = todayISO() }) {
-  const includeRecurring = range.end >= `${monthKey(today)}-01` && range.start <= today;
-  const s = summarizePeriod(txList, recurringItems, range, { includeRecurring });
+  const s = summarizePeriod(txList, recurringItems, range);
   const txs = (txList || []).filter((t) => t.date >= range.start && t.date <= range.end).sort((a, b) => a.date.localeCompare(b.date));
+  const typeOf = (t) => t.category === "Income" ? "Income" : t.category === "Savings" && t.amount > 0 ? "Savings" : t.amount < 0 ? "Refund" : "Expense";
   const txRows = txs.map((t) => [
-    t.date, t.desc, t.category,
-    t.category === "Income" ? "Income" : t.amount < 0 ? "Refund" : "Expense",
+    t.date, t.desc, t.category, typeOf(t),
     t.amount > 0 ? t.amount : null, t.amount < 0 ? Math.abs(t.amount) : null,
     t.source || "", t.excluded ? "No" : "Yes",
   ]);
@@ -692,8 +717,8 @@ export function buildExportModel({ txList, expenses, recurringItems, nameOf, ran
   const catRows = s.categories.map((c) => [c.category, Math.round(c.amount * 100) / 100, s.spend ? Math.round((c.amount / s.spend) * 1000) / 10 : 0]);
   const summaryRows = [
     ["Period", range.label],
-    ["Earned", s.income], ["Spent (excl. refunds" + (includeRecurring ? ", incl. recurring)" : ")"), s.spend],
-    ["Refunds received", s.refunds], ["Net position", s.net],
+    ["Earned", s.income], ["Spent (excl. refunds & savings)", s.spend],
+    ["Saved / invested", s.saved], ["Refunds received", s.refunds], ["Left over", s.leftOver],
     ["Savings rate", s.savingsRate == null ? "n/a" : `${s.savingsRate.toFixed(0)}%`],
     ["Transactions", String(s.count)], ["Generated on", today],
   ];
@@ -985,4 +1010,463 @@ export function buildGroupLedgerPdf(model, ownerLabel = "") {
   });
 
   return buildPdf({ title: "TruCent group ledger", subtitle: ownerLabel || undefined, blocks });
+}
+
+
+// ----------------------------------------------------------------------------
+// Learning from corrections. A rule says: "for this merchant key, in this
+// direction (money out / money in), use this category". Rules override the
+// built-in keyword guesses, and are only ever created by an explicit user
+// action — never silently.
+// ----------------------------------------------------------------------------
+export function merchantKey(raw = "") {
+  const s = String(raw).trim().toLowerCase();
+  if (!s) return "";
+  if (s.includes("@")) {
+    const local = s.split("@")[0];
+    const letters = normMerchant(local);
+    if (letters.length >= 3) return letters;       // "shop123@ybl" -> "shop"
+    const digits = local.replace(/\D/g, "");
+    return digits ? "p:" + digits : local.slice(0, 24);   // phone-number handle
+  }
+  return normMerchant(s);
+}
+export function ruleKeyOf(tx) { return tx.mkey || merchantKey(tx.desc); }
+export function txDir(tx) { return tx.amount < 0 ? "in" : "out"; }
+
+const BUSINESS_WORDS = /\b(store|stores|mart|supermarket|traders|trading|enterprises?|services?|pvt|ltd|limited|restaurant|cafe|hotel|bakery|medical|pharmacy|clinic|hospital|salon|mobiles?|electronics|garments|fashion|foods?|kitchen|dhaba|bar|pub|sweets?|dairy|agency|solutions|technologies|systems|motors|travels|tours|fuels?|petrol|stationers?|books?|studio|gym|fitness|academy|school|college|institute|bank|finance|insurance|payments?|pay|wallet|recharge|bill|shop|center|centre|club)\b/i;
+// Heuristic: does this look like a payment to/from a *person*? Used only to decide
+// whether to ask "always, or just this once?" — a wrong guess costs one extra tap.
+export function isPersonLike(desc = "", mkey = "") {
+  if (String(mkey).startsWith("p:")) return true;
+  const s = String(desc).trim();
+  if (!s || /\d/.test(s) || BUSINESS_WORDS.test(s)) return false;
+  if (guessCategory(s) !== "Others") return false;
+  const words = s.split(/\s+/);
+  return words.length >= 2 && words.length <= 3 && words.every((w) => /^[A-Za-z][A-Za-z.'-]*$/.test(w));
+}
+
+export function applyRules(tx, rules) {
+  if (!rules || !rules.length || tx.excluded) return tx;
+  const key = ruleKeyOf(tx);
+  if (!key) return tx;
+  const dir = txDir(tx);
+  const r = rules.find((x) => x.key === key && x.dir === dir);
+  if (!r) return tx;
+  if (dir === "out" && r.category === "Income") return tx;      // money out can never be income
+  return { ...tx, category: r.category, ruleId: r.id };
+}
+export function upsertRule(rules, { key, dir, category, label }) {
+  const id = `${dir}:${key}`;
+  const rest = (rules || []).filter((r) => r.id !== id);
+  return [{ id, key, dir, category, label: label || key, createdAt: Date.now() }, ...rest];
+}
+function matchesRule(t, rule) {
+  return !t.excluded && txDir(t) === rule.dir && ruleKeyOf(t) === rule.key && !(rule.dir === "out" && rule.category === "Income");
+}
+export function countMatching(txList, rule) {
+  return (txList || []).filter((t) => matchesRule(t, rule) && t.category !== rule.category).length;
+}
+export function applyRuleToTxList(txList, rule) {
+  let changed = 0;
+  const list = (txList || []).map((t) => {
+    if (!matchesRule(t, rule) || t.category === rule.category) return t;
+    changed++;
+    return { ...t, category: rule.category, ruleId: rule.id };
+  });
+  return { list, changed };
+}
+
+// "Needs a category": SMS spending that ended up in Others, grouped by merchant.
+export function groupUncategorized(txList) {
+  const groups = new Map();
+  for (const t of txList || []) {
+    if (!t.smsKey || t.excluded || !(t.amount > 0) || t.category !== "Others") continue;
+    const key = ruleKeyOf(t);
+    if (!key) continue;
+    if (!groups.has(key)) groups.set(key, { key, name: t.desc, count: 0, total: 0, ids: [], mkey: t.mkey, last: "" });
+    const g = groups.get(key);
+    g.count++; g.total += t.amount; g.ids.push(t.id);
+    if (t.date >= g.last) { g.last = t.date; g.name = t.desc; }
+  }
+  return [...groups.values()].map((g) => ({ ...g, personLike: isPersonLike(g.name, g.mkey) })).sort((a, b) => b.total - a.total);
+}
+
+const GENERIC_TOKENS = new Set(["store", "stores", "mart", "traders", "trading", "enterprises", "enterprise", "services", "service", "limited", "shop", "center", "centre", "india", "super", "shree", "sree", "city", "general", "national", "bharat", "royal", "great", "new"]);
+function keyTokens(key) { return String(key).replace(/^p:/, "").split(/\s+/).filter((w) => w.length >= 4 && !GENERIC_TOKENS.has(w)); }
+// Suggestion only (never applied silently): a merchant sharing a distinctive word
+// with one you already categorised, e.g. "Apollo Medical" after "City Medical" -> Health/Meds.
+export function suggestCategory(key, rules) {
+  if (!key || String(key).startsWith("p:")) return null;
+  const mine = new Set(keyTokens(key));
+  if (!mine.size) return null;
+  const votes = new Map();
+  for (const r of rules || []) {
+    if (r.dir !== "out" || r.key === key || r.category === "Income") continue;
+    const shared = keyTokens(r.key).filter((w) => mine.has(w));
+    if (!shared.length) continue;
+    const v = votes.get(r.category) || { score: 0, because: r.label };
+    v.score += shared.length;
+    votes.set(r.category, v);
+  }
+  const best = [...votes.entries()].sort((a, b) => b[1].score - a[1].score)[0];
+  return best ? { category: best[0], because: best[1].because } : null;
+}
+
+// ----------------------------------------------------------------------------
+// Totals — one definition of Earned / Spent / Saved / Left over, used by the
+// header, the month rows in the transaction list, and the dashboard.
+//   Spent    = money out, net of refunds, excluding Savings and excluded items
+//   Saved    = money put into Savings (SIPs, deposits...), net of withdrawals
+//   LeftOver = Earned - Spent - Saved        (Earned = Spent + Saved + LeftOver)
+// ----------------------------------------------------------------------------
+export function summarizeTx(list) {
+  let income = 0, saved = 0, spent = 0, refunds = 0;
+  for (const t of list || []) {
+    if (t.excluded) continue;
+    if (t.category === "Income") { income += Math.abs(t.amount); continue; }
+    if (t.category === "Savings") { saved += t.amount; continue; }
+    spent += t.amount;
+    if (t.amount < 0) refunds += -t.amount;
+  }
+  spent = Math.max(0, spent);
+  return { income, spent, saved, refunds, retained: income - spent, leftOver: income - spent - saved };
+}
+
+// Newest first. Within one day, newest by time received where we know it.
+export function txTimeKey(t) {
+  if (t.ts) return Number(t.ts) || 0;
+  const m = /^(\d{10,})\|/.exec(t.smsKey || "") || /(\d{12,})/.exec(String(t.id || ""));
+  return m ? Number(m[1]) : 0;
+}
+export function sortTxDesc(list) {
+  return [...(list || [])].sort((a, b) => String(b.date).localeCompare(String(a.date)) || txTimeKey(b) - txTimeKey(a));
+}
+export function groupTxByMonth(list) {
+  const groups = new Map();
+  for (const t of sortTxDesc(list)) {
+    const k = monthKey(t.date);
+    if (!groups.has(k)) groups.set(k, []);
+    groups.get(k).push(t);
+  }
+  return [...groups.entries()].map(([key, items]) => ({ key, label: monthLabel(key), items, count: items.length, ...summarizeTx(items) }));
+}
+
+// ----------------------------------------------------------------------------
+// Recurring bills: what's still unpaid this month
+// ----------------------------------------------------------------------------
+export function isPaidForMonth(item, mk) { return !!item.lastPaid && monthKey(item.lastPaid) === mk; }
+
+export function dueThisMonth(recurringItems, planned, today = todayISO()) {
+  const mk = monthKey(today);
+  const { y, m } = isoParts(today);
+  const items = [];
+  for (const e of recurringItems || []) {
+    if (isPaidForMonth(e, mk)) continue;
+    const due = `${mk}-${pad2(Math.min(e.everyMonthDay, lastDayOfMonth(y, m)))}`;
+    items.push({ id: e.id, name: e.desc, amount: e.amount, dueDate: due, kind: "recurring", overdue: due < today });
+  }
+  for (const p of planned || []) {
+    if (monthKey(p.dueDate) !== mk) continue;
+    items.push({ id: p.id, name: p.desc, amount: p.amount, dueDate: p.dueDate, kind: "upcoming", overdue: p.dueDate < today });
+  }
+  items.sort((a, b) => a.dueDate.localeCompare(b.dueDate));
+  return { items, total: items.reduce((sum, i) => sum + i.amount, 0) };
+}
+
+// ----------------------------------------------------------------------------
+// SMS bills -> recurring bills. A biller becomes a recurring bill (automatically)
+// when it shows up in two consecutive months, or when the message is an
+// auto-debit/EMI notice (those repeat by nature). One item per biller: later
+// statements refresh its amount and due day instead of piling up in Upcoming.
+// Quarterly / yearly bills (gap > ~40 days) stay as one-off Upcoming items.
+// ----------------------------------------------------------------------------
+function dayOf(iso) { return isoParts(iso).d; }
+function hasMonthlyPattern(records) {
+  const ds = [...new Set(records.map((r) => r.dueDate))].sort();
+  for (let i = 1; i < ds.length; i++) {
+    const gap = daysBetweenISO(ds[i - 1], ds[i]);
+    if (gap >= 24 && gap <= 40) return true;
+  }
+  return false;
+}
+function plannedFromBill(b) {
+  return {
+    id: "p_" + hashString(b.billKey), desc: b.desc, category: b.category, amount: b.amount, dueDate: b.dueDate,
+    fromSms: true, billKey: b.billKey, billerKey: b.billerKey, billLabel: b.billLabel, smsKey: b.smsKey, body: b.body, sender: b.sender,
+  };
+}
+export function processBills(freshBills, staleBills, { recurring = [], planned = [], history = {}, ignored = new Set(), today = todayISO() } = {}) {
+  const hist = {};
+  for (const [k, v] of Object.entries(history || {})) hist[k] = v.map((x) => ({ ...x }));
+  const recurringAdd = [];
+  const recurringUpdate = new Map();
+  const plannedRemoveIds = new Set();
+  let plannedOut = [];
+  const promoted = [];
+
+  const all = [...(staleBills || []).map((b) => ({ b, fresh: false })), ...(freshBills || []).map((b) => ({ b, fresh: true }))]
+    .sort((x, y) => x.b.dueDate.localeCompare(y.b.dueDate));
+  const findRecurring = (billerKey) => recurringAdd.find((r) => r.billerKey === billerKey) || (recurring || []).find((r) => r.billerKey === billerKey);
+
+  for (const { b, fresh } of all) {
+    if (!hist[b.billerKey]) hist[b.billerKey] = [];
+    const h = hist[b.billerKey];
+    if (!h.some((x) => x.billKey === b.billKey)) h.push({ billKey: b.billKey, dueDate: b.dueDate, amount: b.amount });
+
+    const existing = findRecurring(b.billerKey);
+    if (existing) {
+      if (fresh) {
+        const upd = { amount: b.amount, everyMonthDay: dayOf(b.dueDate) };
+        const justAdded = recurringAdd.find((r) => r.id === existing.id);
+        if (justAdded) Object.assign(justAdded, upd);
+        else recurringUpdate.set(existing.id, { ...(recurringUpdate.get(existing.id) || {}), ...upd });
+      }
+      continue;
+    }
+    if (ignored.has("rec:" + b.billerKey)) {            // user deleted this recurring bill before
+      if (fresh) plannedOut.push(plannedFromBill(b));
+      continue;
+    }
+    if (b.autoDebit || hasMonthlyPattern(h)) {
+      recurringAdd.push({
+        id: "r_" + hashString(b.billerKey), desc: b.desc, amount: b.amount, category: b.category,
+        everyMonthDay: dayOf(b.dueDate), lastPaid: null, source: "sms", fromSms: true,
+        billerKey: b.billerKey, billLabel: b.billLabel, isNew: true, createdAt: today,
+      });
+      promoted.push(b.desc);
+      plannedOut = plannedOut.filter((p) => p.billerKey !== b.billerKey);
+      (planned || []).filter((p) => p.billerKey === b.billerKey).forEach((p) => plannedRemoveIds.add(p.id));
+      continue;
+    }
+    if (fresh) plannedOut.push(plannedFromBill(b));
+  }
+
+  // keep history small
+  for (const k of Object.keys(hist)) {
+    hist[k].sort((a, b) => a.dueDate.localeCompare(b.dueDate));
+    hist[k] = hist[k].slice(-8);
+    if (daysBetweenISO(hist[k][hist[k].length - 1].dueDate, today) > 400) delete hist[k];
+  }
+  return {
+    recurringAdd,
+    recurringUpdate: [...recurringUpdate.entries()].map(([id, updates]) => ({ id, updates })),
+    plannedAdd: plannedOut,
+    plannedRemoveIds: [...plannedRemoveIds],
+    history: hist,
+    promoted,
+  };
+}
+
+// ----------------------------------------------------------------------------
+// Matching a newly-arrived bank debit to something the user already recorded,
+// so a payment is counted once. The SMS entry is always the one that is kept.
+//   1. a recurring bill for that cycle (marks it paid; replaces a manual "Mark paid" entry)
+//   2. a manual "Spent" entry made from Upcoming
+//   3. an Upcoming item not yet marked spent (it is simply resolved)
+// ----------------------------------------------------------------------------
+const GENERIC_WORDS = new Set(["bill", "bills", "card", "credit", "payment", "payments", "premium", "loan", "emi", "recurring", "upi", "pay", "bank", "account", "towards", "monthly", "due"]);
+function distinctiveTokens(text) { return normMerchant(text).split(" ").filter((w) => w.length >= 3 && !GENERIC_WORDS.has(w)); }
+function nameHit(label, tx) {
+  const toks = distinctiveTokens(label);
+  if (!toks.length) return false;
+  const hay = normMerchant(tx.desc) + " " + String(tx.body || "").toLowerCase().replace(/[^a-z]+/g, " ");
+  return toks.some((w) => hay.includes(w));
+}
+const amtClose = (a, b) => Math.abs(a - b) <= Math.max(5, 0.02 * Math.max(a, b));
+const sameRealCategory = (a, b) => !!a && a === b && a !== "Others";
+
+function cycleDueFor(item, txDate) {
+  const { y, m } = isoParts(txDate);
+  let best = null;
+  for (const off of [-1, 0, 1]) {
+    let yy = y, mm = m + off;
+    if (mm < 1) { mm = 12; yy--; }
+    if (mm > 12) { mm = 1; yy++; }
+    const due = `${yy}-${pad2(mm)}-${pad2(Math.min(item.everyMonthDay, lastDayOfMonth(yy, mm)))}`;
+    const diff = daysBetweenISO(due, txDate);
+    if (diff >= -20 && diff <= 15 && (!best || Math.abs(diff) < Math.abs(best.diff))) best = { due, diff };   // people often pay soon after the statement arrives
+  }
+  return best;
+}
+
+export function reconcileNewTx(newTxs, { txList = [], recurring = [], planned = [] } = {}) {
+  const removeTxIds = new Set();
+  const plannedRemove = [];
+  const rec = new Map((recurring || []).map((r) => [r.id, { ...r }]));
+  const touched = new Set();
+  const claimed = new Set();
+  const manualPay = (txList || []).filter((t) => t.payRef && !t.recurringId);
+  const usedPlanned = new Set();
+  const out = [];
+
+  for (const tx of [...(newTxs || [])].sort((a, b) => a.date.localeCompare(b.date))) {
+    if (!(tx.amount > 0)) { out.push(tx); continue; }
+
+    // 1) recurring bill
+    let best = null;
+    for (const r of rec.values()) {
+      if (!amtClose(r.amount, tx.amount)) continue;
+      if (!(nameHit(r.desc, tx) || sameRealCategory(r.category, tx.category))) continue;
+      const c = cycleDueFor(r, tx.date);
+      if (!c) continue;
+      const cm = monthKey(c.due);
+      if (claimed.has(r.id + ":" + cm)) continue;
+      let replace = null;
+      if (r.lastPaid && monthKey(r.lastPaid) === cm && r.paidTxId) {
+        const prev = (txList || []).find((x) => x.id === r.paidTxId);
+        if (prev && prev.payRef && !prev.smsKey) replace = prev.id;   // earlier manual "Mark paid" -> swap for the SMS record
+        else continue;                                                 // already paid, via an SMS entry
+      }
+      const diff = Math.abs(r.amount - tx.amount);
+      if (!best || diff < best.diff) best = { r, c, cm, replace, diff };
+    }
+    if (best) {
+      claimed.add(best.r.id + ":" + best.cm);
+      if (best.replace) removeTxIds.add(best.replace);
+      const cur = rec.get(best.r.id);
+      if (!cur.lastPaid || best.c.due >= cur.lastPaid) { cur.lastPaid = best.c.due; cur.paidTxId = tx.id; }
+      touched.add(cur.id);
+      out.push({ ...tx, recurringId: best.r.id });
+      continue;
+    }
+
+    // 2) manual "Spent" entry from Upcoming
+    const mp = manualPay.find((mt) => !removeTxIds.has(mt.id) && amtClose(mt.amount, tx.amount)
+      && daysBetweenISO(mt.date, tx.date) >= -3 && daysBetweenISO(mt.date, tx.date) <= 10
+      && (nameHit(mt.desc, tx) || sameRealCategory(mt.category, tx.category)));
+    if (mp) { removeTxIds.add(mp.id); out.push(tx); continue; }
+
+    // 3) Upcoming item the user hasn't marked spent
+    const up = (planned || []).find((p) => !usedPlanned.has(p.id) && amtClose(p.amount, tx.amount)
+      && daysBetweenISO(p.dueDate, tx.date) >= -15 && daysBetweenISO(p.dueDate, tx.date) <= 10
+      && (nameHit(p.desc, tx) || sameRealCategory(p.category, tx.category)));
+    if (up) { usedPlanned.add(up.id); plannedRemove.push({ id: up.id, billKey: up.billKey }); }
+    out.push(tx);
+  }
+  return {
+    txs: out,
+    recurringUpdates: [...touched].map((id) => ({ id, updates: { lastPaid: rec.get(id).lastPaid, paidTxId: rec.get(id).paidTxId } })),
+    removeTxIds: [...removeTxIds],
+    plannedRemove,
+  };
+}
+
+// ----------------------------------------------------------------------------
+// Saved-data migration + backup format
+// ----------------------------------------------------------------------------
+export const DATA_VERSION = 2;
+export const BACKUP_KEYS = [
+  "trucent_expenses", "trucent_tx", "trucent_budgets", "trucent_goals", "trucent_planned",
+  "trucent_recurring", "trucent_rules", "trucent_bill_history", "trucent_members", "trucent_current_member",
+  "trucent_activity", "trucent_sms_ignored", "trucent_recurring_dismissed", "trucent_nudge_phones", "trucent_notif_state",
+];
+const OBJECT_KEYS = new Set(["trucent_bill_history", "trucent_nudge_phones", "trucent_notif_state"]);
+const STRING_KEYS = new Set(["trucent_current_member"]);
+
+// store: { [localStorage key]: parsed value }. Pure — returns a migrated copy.
+export function migrateStore(store, fromVersion = 1) {
+  const out = { ...store };
+  if (fromVersion >= 2) return out;
+  const has = (k) => Array.isArray(store[k]);
+  const rn = renameCategory;
+
+  let tx = has("trucent_tx") ? store.trucent_tx.map((t) => {
+    let c = rn(t.category);
+    if (c === "Income" && t.amount > 0) c = "Others";               // money out can't be income
+    return c === t.category ? t : { ...t, category: c };
+  }) : null;
+
+  let expenses = has("trucent_expenses") ? store.trucent_expenses : null;
+  let recurring = has("trucent_recurring") ? [...store.trucent_recurring] : [];
+  const known = (desc, amt) => recurring.some((r) => r.desc === desc && Math.round(r.amount) === Math.round(amt));
+  let touchedRecurring = false;
+
+  if (expenses) {                                                   // old Split-tab recurring bills
+    for (const e of expenses.filter((x) => x.recurring)) {
+      if (known(e.desc, e.amount)) continue;
+      recurring.push({
+        id: "r_" + e.id, desc: e.desc, amount: e.amount, category: rn(e.category),
+        everyMonthDay: e.everyMonthDay || dayOf(e.date), lastPaid: e.lastPaid || null, source: "manual",
+      });
+      touchedRecurring = true;
+    }
+    expenses = expenses.filter((x) => !x.recurring).map((e) => (rn(e.category) === e.category ? e : { ...e, category: rn(e.category) }));
+  }
+  if (tx) {                                                         // old "repeats regularly" flags on offline entries
+    tx = tx.map((t) => {
+      if (!t.recurring) return t;
+      const { recurring: _flag, ...rest } = t;
+      if (t.category !== "Income" && !known(t.desc, t.amount)) {
+        const id = "r_" + t.id;
+        recurring.push({ id, desc: t.desc, amount: t.amount, category: t.category, everyMonthDay: dayOf(t.date), lastPaid: t.date, paidTxId: t.id, source: "offline" });
+        touchedRecurring = true;
+        return { ...rest, recurringId: id };
+      }
+      return rest;
+    });
+  }
+
+  if (has("trucent_budgets")) {                                     // renames can merge two budgets into one: keep the higher limit
+    const merged = new Map();
+    for (const b of store.trucent_budgets) {
+      const c = rn(b.category);
+      const prev = merged.get(c);
+      merged.set(c, { ...b, category: c, limit: prev ? Math.max(prev.limit, b.limit) : b.limit });
+    }
+    out.trucent_budgets = [...merged.values()];
+  }
+  if (has("trucent_planned")) out.trucent_planned = store.trucent_planned.map((p) => ({ ...p, category: rn(p.category) }));
+  if (has("trucent_rules")) out.trucent_rules = store.trucent_rules.map((r) => ({ ...r, category: rn(r.category) }));
+  if (store.trucent_notif_state && Array.isArray(store.trucent_notif_state.keys)) {
+    out.trucent_notif_state = {
+      ...store.trucent_notif_state,
+      keys: store.trucent_notif_state.keys.map((k) => {
+        const m = /^b:(.*):(\d{4}-\d{2}):(80|100)$/.exec(k);
+        return m ? `b:${rn(m[1])}:${m[2]}:${m[3]}` : k;
+      }),
+    };
+  }
+  if (tx) out.trucent_tx = tx;
+  if (expenses) out.trucent_expenses = expenses;
+  if (recurring.length || touchedRecurring || has("trucent_recurring")) out.trucent_recurring = recurring.map((r) => ({ ...r, category: rn(r.category) }));
+  return out;
+}
+
+export function buildBackup(store, now = new Date()) {
+  const data = {};
+  for (const k of BACKUP_KEYS) if (store[k] !== undefined && store[k] !== null) data[k] = store[k];
+  return { app: "trucent", version: DATA_VERSION, createdAt: now.toISOString(), data };
+}
+
+export function parseBackup(text) {
+  let obj;
+  try { obj = JSON.parse(text); } catch { return { ok: false, error: "That file couldn't be read as a TruCent backup." }; }
+  if (!obj || obj.app !== "trucent" || typeof obj.data !== "object" || obj.data === null) {
+    return { ok: false, error: "This doesn't look like a TruCent backup file." };
+  }
+  const ver = Number(obj.version) || 1;
+  if (ver > DATA_VERSION) return { ok: false, error: "This backup was made by a newer version of TruCent. Update the app first, then restore." };
+
+  const clean = {};
+  for (const k of BACKUP_KEYS) {
+    const v = obj.data[k];
+    if (v === undefined || v === null) continue;
+    const ok = STRING_KEYS.has(k) ? typeof v === "string"
+      : OBJECT_KEYS.has(k) ? typeof v === "object" && !Array.isArray(v)
+      : Array.isArray(v);
+    if (ok) clean[k] = v;
+  }
+  const store = migrateStore(clean, ver);
+  if (store.trucent_members && !(store.trucent_members.length && store.trucent_members.every((m) => m && m.id && m.name))) {
+    delete store.trucent_members;
+  }
+  if (store.trucent_members && store.trucent_current_member && !store.trucent_members.some((m) => m.id === store.trucent_current_member)) {
+    store.trucent_current_member = store.trucent_members[0].id;
+  }
+  const n = (k) => (Array.isArray(store[k]) ? store[k].length : 0);
+  return {
+    ok: true, store, createdAt: obj.createdAt || null,
+    summary: { transactions: n("trucent_tx"), groupExpenses: n("trucent_expenses"), members: n("trucent_members"), recurring: n("trucent_recurring"), goals: n("trucent_goals"), rules: n("trucent_rules") },
+  };
 }

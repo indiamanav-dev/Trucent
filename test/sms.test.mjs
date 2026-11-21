@@ -42,7 +42,7 @@ t("Indian digit grouping 1,00,000.50", () => {
 });
 t("credit card bill payment from bank is excluded from spending (avoid double count)", () => {
   const r = p("Rs.12,000.00 debited from A/c XX1234 on 12-09-26 towards HDFC Credit Card XX9999 payment (UPI Ref 1)");
-  assert.equal(r.kind, "txn"); assert.equal(r.tx.excluded, true); assert.equal(r.tx.category, "Credit Card / EMI");
+  assert.equal(r.kind, "txn"); assert.equal(r.tx.excluded, true); assert.equal(r.tx.category, "Credit Card/EMI");
 });
 
 console.log("\nCredits / income / refunds");
@@ -85,7 +85,7 @@ console.log("\nBills & upcoming dues");
 t("credit card statement: total due, not min due", () => {
   const r = p("Dear Customer, your HDFC Bank Credit Card XX1234 statement is generated. Total Amt Due Rs 12,345.67, Min Amt Due Rs 617.00, Due Date 25-Sep-2026. Pay via NetBanking/app");
   assert.equal(r.kind, "bill"); assert.equal(r.bill.amount, 12345.67); assert.equal(r.bill.dueDate, "2026-09-25");
-  assert.equal(r.bill.category, "Credit Card / EMI"); assert.match(r.bill.desc, /HDFC credit card bill/i);
+  assert.equal(r.bill.category, "Credit Card/EMI"); assert.match(r.bill.desc, /HDFC credit card bill/i);
 });
 t("min due listed before total due still picks total", () => {
   const r = p("Your ICICI Credit Card statement: Min Amt Due Rs 500. Total Amt Due Rs 9,800. Due Date 28/09/2026");
@@ -93,11 +93,11 @@ t("min due listed before total due still picks total", () => {
 });
 t("electricity bill dd/mm/yyyy", () => {
   const r = p("Your BESCOM electricity bill of Rs 1,450 for consumer no 123 is due on 20/09/2026. Pay online to avoid disconnection", "AD-BESCOM");
-  assert.equal(r.kind, "bill"); assert.equal(r.bill.amount, 1450); assert.equal(r.bill.dueDate, "2026-09-20"); assert.equal(r.bill.category, "Utilities");
+  assert.equal(r.kind, "bill"); assert.equal(r.bill.amount, 1450); assert.equal(r.bill.dueDate, "2026-09-20"); assert.equal(r.bill.category, "Bills/Utilities");
 });
 t("insurance premium 2-digit year + Mon", () => {
   const r = p("Reminder: Your LIC premium of Rs.5,432 is due on 28-Sep-26", "VK-LICIND");
-  assert.equal(r.bill.amount, 5432); assert.equal(r.bill.dueDate, "2026-09-28"); assert.equal(r.bill.category, "Insurance");
+  assert.equal(r.bill.amount, 5432); assert.equal(r.bill.dueDate, "2026-09-28"); assert.equal(r.bill.category, "Bills/Utilities");
 });
 t("year-less date 'pay by 5th Oct' resolves to next occurrence", () => {
   const r = p("Your Airtel postpaid bill of Rs 499 is generated, pay by 5th Oct", "AD-AIRTEL");
@@ -105,7 +105,7 @@ t("year-less date 'pay by 5th Oct' resolves to next occurrence", () => {
 });
 t("future auto-debit notice becomes an upcoming bill, not a transaction", () => {
   const r = p("Your EMI of Rs 5,000 will be debited from A/c XX1234 on 05-10-26. Maintain sufficient balance.");
-  assert.equal(r.kind, "bill"); assert.equal(r.bill.amount, 5000); assert.equal(r.bill.dueDate, "2026-10-05"); assert.equal(r.bill.category, "Credit Card / EMI");
+  assert.equal(r.kind, "bill"); assert.equal(r.bill.amount, 5000); assert.equal(r.bill.dueDate, "2026-10-05"); assert.equal(r.bill.category, "Credit Card/EMI");
 });
 t("bill payment confirmation is NOT a bill", () => {
   assert.equal(p("Payment of Rs 1,450 towards your electricity bill received. Thank you", "AD-BESCOM"), null);
@@ -114,8 +114,19 @@ t("an actual EMI debit that already happened stays a transaction", () => {
   const r = p("Rs 5,000 debited from A/c XX1234 on 05-09-26 towards loan EMI (NACH). Avl Bal Rs 9,000");
   assert.equal(r.kind, "txn"); assert.equal(r.tx.amount, 5000);
 });
-t("stale bill (due > 7 days ago) ignored", () => {
-  assert.equal(p("Your BESCOM electricity bill of Rs 1,450 is due on 01/08/2026", "AD-BESCOM"), null);
+t("stale bill (due > 7 days ago) is kept but flagged, so it can show a monthly pattern without becoming an Upcoming item", () => {
+  const r = p("Your BESCOM electricity bill of Rs 1,450 is due on 01/08/2026", "AD-BESCOM");
+  assert.equal(r.kind, "bill"); assert.equal(r.bill.stale, true);
+  const ing = ingestMessages([msg("Your BESCOM electricity bill of Rs 1,450 is due on 01/08/2026", "AD-BESCOM")], { today: TODAY });
+  assert.equal(ing.bills.length, 0); assert.equal(ing.staleBills.length, 1);
+});
+t("bills carry a biller key (same biller, different month => same key) and an auto-debit flag", () => {
+  const a = p("Your BESCOM electricity bill of Rs 1,450 is due on 20/09/2026", "AD-BESCOM");
+  const b = p("Your BESCOM electricity bill of Rs 1,610 is due on 20/10/2026", "AD-BESCOM");
+  assert.equal(a.bill.billerKey, b.bill.billerKey); assert.notEqual(a.bill.billKey, b.bill.billKey);
+  assert.equal(a.bill.autoDebit, false);
+  const e = p("Your EMI of Rs 5,000 will be debited from A/c XX1234 on 05-10-26.");
+  assert.equal(e.bill.autoDebit, true);
 });
 
 console.log("\nFinding due dates");

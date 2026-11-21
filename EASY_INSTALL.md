@@ -84,6 +84,10 @@ uninstalling the old one first — which **erases all your local data**, because
 the app stores everything on the phone, not on a server. With it set up, a new
 build installs as a normal update and keeps your data.
 
+## Keep a backup
+
+Everything you enter lives only on your phone. In the app: profile (top right) -> **Your data** -> **Back up**, then save the file to Drive or email it to yourself. After a reinstall or on a new phone: **Restore** and pick that file. Do it before uninstalling, and now and then after.
+
 ## Enable in-place updates (do this once, before your first real update)
 
 A signing key is how Android decides "is this an update to the same app, or a
